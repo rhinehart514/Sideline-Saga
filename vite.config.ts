@@ -11,8 +11,11 @@ export default defineConfig(({ mode }) => {
       },
       plugins: [react()],
       define: {
-        'process.env.API_KEY': JSON.stringify(env.GEMINI_API_KEY),
-        'process.env.GEMINI_API_KEY': JSON.stringify(env.GEMINI_API_KEY)
+        // PRODUCTION: Use proxy (no API key in bundle!)
+        // Set VITE_PROXY_URL in your hosting environment
+        
+        // DEV ONLY: Direct API access (remove in production)
+        'process.env.API_KEY': JSON.stringify(env.GEMINI_API_KEY || ''),
       },
       resolve: {
         alias: {

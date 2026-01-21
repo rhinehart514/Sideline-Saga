@@ -1,5 +1,6 @@
 import React from 'react';
 import { TimelinePhase } from '../types';
+import { CheckCircle2 } from 'lucide-react';
 
 interface Props {
   currentPhase: TimelinePhase;
@@ -11,14 +12,16 @@ const Timeline: React.FC<Props> = ({ currentPhase }) => {
   const currentIndex = PHASES.indexOf(currentPhase);
 
   return (
-    <div className="w-full bg-slate-950 px-4 pt-4 pb-2 border-b border-slate-800">
-      <div className="flex items-center justify-between relative">
+    <div className="w-full bg-black px-8 py-5 border-b-2 border-red-600">
+      {/* ESPN-style Phase Tracker - Apple: generous spacing */}
+      <div className="flex items-center justify-between relative max-w-4xl mx-auto">
+        
         {/* Progress Bar Background */}
-        <div className="absolute top-1/2 left-0 w-full h-1 bg-slate-800 -z-0"></div>
+        <div className="absolute top-1/2 left-0 w-full h-1.5 bg-zinc-800 -translate-y-1/2 -z-0 rounded-full"></div>
         
         {/* Progress Bar Fill */}
         <div 
-          className="absolute top-1/2 left-0 h-1 bg-emerald-600 -z-0 transition-all duration-500"
+          className="absolute top-1/2 left-0 h-1.5 bg-gradient-to-r from-red-700 to-red-500 -translate-y-1/2 -z-0 transition-all duration-500 rounded-full"
           style={{ width: `${(currentIndex / (PHASES.length - 1)) * 100}%` }}
         ></div>
 
@@ -29,40 +32,48 @@ const Timeline: React.FC<Props> = ({ currentPhase }) => {
           const isCarouselActive = isCarousel && isActive;
 
           return (
-            <div key={phase} className="flex flex-col items-center z-10 group relative">
+            <div key={phase} className="flex flex-col items-center z-10 relative group">
               
-              {/* Special Glow for Active Carousel */}
+              {/* Carousel Glow Effect */}
               {isCarouselActive && (
-                 <div className="absolute -inset-2 bg-amber-500/20 blur-xl rounded-full animate-pulse"></div>
+                <div className="absolute -inset-4 bg-yellow-500/30 blur-xl rounded-full animate-pulse"></div>
               )}
-
-              <div 
-                className={`
-                  w-3 h-3 rounded-full border-2 transition-all duration-300 relative
-                  ${isActive ? 'scale-125 shadow-[0_0_10px_rgba(16,185,129,0.5)]' : ''}
-                  ${isCarouselActive ? 'bg-amber-500 border-amber-300 shadow-[0_0_15px_rgba(245,158,11,0.6)]' : ''}
-                  ${isActive && !isCarouselActive ? 'bg-emerald-500 border-emerald-300' : ''}
-                  ${isPast ? 'bg-emerald-700 border-emerald-700' : ''}
-                  ${!isActive && !isPast ? 'bg-slate-900 border-slate-700' : ''}
-                `}
-              ></div>
-              <span 
-                className={`
-                  mt-2 text-[10px] font-bold uppercase tracking-wider transition-colors duration-300
-                  ${isCarouselActive ? 'text-amber-400 animate-pulse' : ''}
-                  ${isActive && !isCarouselActive ? 'text-emerald-400' : ''}
-                  ${!isActive ? 'text-slate-600' : ''}
-                  hidden md:block
-                `}
-              >
+              
+              {/* Phase Dot - Apple: larger, cleaner */}
+              <div className={`
+                relative w-5 h-5 rounded-full border-2 transition-all duration-300 flex items-center justify-center
+                ${isActive && !isCarouselActive ? 'bg-red-600 border-red-400 scale-125 shadow-lg shadow-red-500/50' : ''}
+                ${isCarouselActive ? 'bg-yellow-500 border-yellow-300 scale-150 shadow-lg shadow-yellow-500/50' : ''}
+                ${isPast ? 'bg-red-700 border-red-700' : ''}
+                ${!isActive && !isPast ? 'bg-zinc-900 border-zinc-700' : ''}
+              `}>
+                {isPast && <CheckCircle2 className="w-3 h-3 text-white" />}
+              </div>
+              
+              {/* Phase Label - Apple: more spacing from dot */}
+              <span className={`
+                mt-4 font-headline text-xs uppercase tracking-wider transition-colors duration-300
+                hidden md:block
+                ${isCarouselActive ? 'text-yellow-400 animate-pulse' : ''}
+                ${isActive && !isCarouselActive ? 'text-red-400' : ''}
+                ${isPast ? 'text-zinc-600' : ''}
+                ${!isActive && !isPast ? 'text-zinc-700' : ''}
+              `}>
                 {phase}
               </span>
             </div>
           );
         })}
       </div>
-      <div className="md:hidden text-center mt-2">
-         <span className={`text-xs font-bold uppercase tracking-widest ${currentPhase === 'Carousel' ? 'text-amber-500' : 'text-emerald-500'}`}>{currentPhase}</span>
+      
+      {/* Mobile Phase Display - Apple: cleaner */}
+      <div className="md:hidden text-center mt-5">
+        <span className={`
+          font-headline text-base uppercase tracking-widest
+          ${currentPhase === 'Carousel' ? 'text-yellow-500' : 'text-red-500'}
+        `}>
+          {currentPhase}
+        </span>
       </div>
     </div>
   );
