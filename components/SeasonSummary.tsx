@@ -1,6 +1,7 @@
+
 import React from 'react';
 import { SeasonSummary as SeasonSummaryType } from '../types';
-import { Medal, Star, MessageSquare, TrendingUp, Award } from 'lucide-react';
+import { Medal, Star, Target, UserCheck, GraduationCap } from 'lucide-react';
 
 interface Props {
   summary: SeasonSummaryType;
@@ -8,75 +9,81 @@ interface Props {
 
 const SeasonSummary: React.FC<Props> = ({ summary }) => {
   return (
-    <div className="bg-zinc-900 rounded overflow-hidden shadow-2xl my-6 max-w-2xl mx-auto border border-zinc-800">
-      
-      {/* ESPN-Style Header */}
-      <div className="bg-gradient-to-r from-red-700 to-red-600 p-4 flex justify-between items-center">
-        <div className="flex items-center space-x-3">
-          <Award className="w-6 h-6 text-white" />
-          <div>
-            <h2 className="font-headline text-xl text-white uppercase tracking-wide">Season Review</h2>
-            <p className="font-broadcast text-xs text-red-200">Year {summary.year} • Official Report</p>
-          </div>
+    <div className="bg-slate-200 text-slate-900 rounded-sm shadow-2xl overflow-hidden my-6 max-w-2xl mx-auto transform rotate-1 hover:rotate-0 transition-transform duration-300">
+      {/* Official Header */}
+      <div className="bg-slate-800 text-slate-100 p-4 border-b-4 border-emerald-600 flex justify-between items-center">
+        <div>
+          <h2 className="text-xl font-black uppercase tracking-widest">Season Review</h2>
+          <p className="text-xs font-mono text-emerald-400">YEAR {summary.year} // OFFICIAL RECORD</p>
         </div>
-        <div className="text-right">
-          <div className="font-score text-4xl text-white tracking-tighter">
-            {summary.finalRecord}
-          </div>
-          <div className="font-broadcast text-[10px] text-red-200 uppercase">Final Record</div>
+        <div className="text-3xl font-black font-mono tracking-tighter">
+          {summary.finalRecord}
         </div>
       </div>
 
       <div className="p-6 space-y-6">
         
         {/* Main Result */}
-        <div className="flex items-center space-x-4 pb-6 border-b border-zinc-800">
-          <div className="bg-yellow-500/20 p-3 rounded-lg border border-yellow-500/50">
-            <Medal className="w-8 h-8 text-yellow-500" />
+        <div className="flex items-center space-x-4 pb-6 border-b border-slate-300">
+          <div className="bg-emerald-100 p-3 rounded-full border border-emerald-300">
+             <Medal className="w-8 h-8 text-emerald-700" />
           </div>
           <div>
-            <div className="font-headline text-[10px] text-zinc-500 uppercase tracking-wider">Season Result</div>
-            <div className="font-broadcast text-xl text-white font-bold">{summary.accomplishment}</div>
+            <div className="text-xs font-bold text-slate-500 uppercase tracking-wider">Season Result</div>
+            <div className="text-xl font-bold text-slate-900">{summary.accomplishment}</div>
           </div>
         </div>
 
         {/* Stats Grid */}
         <div>
-          <div className="flex items-center space-x-2 mb-3">
-            <Star className="w-4 h-4 text-red-500" />
-            <span className="font-headline text-xs text-zinc-500 uppercase tracking-wider">Key Metrics</span>
+          <div className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-2 flex items-center">
+            <Star className="w-3 h-3 mr-1" /> Key Metrics
           </div>
           <div className="grid grid-cols-2 gap-3">
             {summary.keyStats.map((stat, idx) => (
-              <div 
-                key={idx} 
-                className="bg-zinc-800 p-3 rounded border-l-2 border-red-600 flex items-center space-x-2"
-              >
-                <TrendingUp className="w-4 h-4 text-zinc-500" />
-                <span className="font-broadcast text-sm text-zinc-300">{stat}</span>
+              <div key={idx} className="bg-white p-3 rounded border border-slate-300 shadow-sm text-sm font-medium text-slate-800">
+                {stat}
               </div>
             ))}
           </div>
         </div>
 
+        {/* Recruiting Class Block (NEW) */}
+        {summary.recruitingClassRank && (
+            <div className="bg-blue-50 p-4 rounded border-l-4 border-blue-600 shadow-sm">
+                <div className="flex items-center space-x-2 mb-2">
+                    <GraduationCap className="w-4 h-4 text-blue-700" />
+                    <span className="text-xs font-bold text-blue-700 uppercase tracking-wider">Recruiting Class</span>
+                </div>
+                <div className="flex justify-between items-center">
+                    <div>
+                        <span className="text-2xl font-black text-slate-900">{summary.recruitingClassRank}</span>
+                    </div>
+                    {summary.topSignee && (
+                        <div className="text-right">
+                             <span className="text-[10px] font-bold text-slate-500 uppercase block">Top Signee</span>
+                             <span className="text-sm font-bold text-slate-800">{summary.topSignee}</span>
+                        </div>
+                    )}
+                </div>
+            </div>
+        )}
+
         {/* Board/AD Feedback */}
-        <div className="bg-black/50 p-4 rounded border border-zinc-800">
-          <div className="flex items-center space-x-2 mb-3">
-            <MessageSquare className="w-4 h-4 text-yellow-500" />
-            <span className="font-headline text-xs text-zinc-500 uppercase tracking-wider">AD Evaluation</span>
-          </div>
-          <p className="font-broadcast italic text-zinc-300 leading-relaxed">
-            "{summary.boardFeedback}"
-          </p>
+        <div className="bg-slate-100 p-4 rounded border-l-4 border-slate-800">
+           <div className="flex items-center space-x-2 mb-2">
+             <UserCheck className="w-4 h-4 text-slate-600" />
+             <span className="text-xs font-bold text-slate-600 uppercase tracking-wider">Evaluation</span>
+           </div>
+           <p className="font-serif italic text-slate-700 leading-relaxed">
+             "{summary.boardFeedback}"
+           </p>
         </div>
         
       </div>
 
-      {/* Footer */}
-      <div className="bg-black px-4 py-2 border-t border-zinc-800">
-        <span className="font-broadcast text-[10px] text-zinc-600 uppercase">
-          End of Report • {summary.year} Season
-        </span>
+      <div className="bg-slate-300 p-2 text-center">
+         <span className="text-[10px] font-mono text-slate-500 uppercase">End of Report // {summary.year}</span>
       </div>
     </div>
   );

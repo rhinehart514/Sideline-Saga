@@ -1,6 +1,9 @@
+
+
 import React from 'react';
 import { SaveHeader as SaveHeaderType } from '../types';
 import { Shield, Calendar, Briefcase, Brain, Activity, Trophy, MapPin, Hash, BarChart3, Heart } from 'lucide-react';
+import { getTeamDetails } from '../data/teams';
 
 interface Props {
   header: SaveHeaderType;
@@ -10,6 +13,11 @@ const SaveHeader: React.FC<Props> = ({ header }) => {
   // Normalize Legacy Score to percentage (0-1000 => 0-100%)
   const legacyPercent = Math.min(100, Math.max(0, header.legacyScore / 10));
   
+  // Team Metadata
+  const teamData = getTeamDetails(header.team);
+  const primaryColor = teamData.colors.primary;
+  const secondaryColor = teamData.colors.secondary;
+
   // Determine legacy tier color
   const getLegacyColor = (score: number) => {
     if (score < 200) return "bg-slate-500";
@@ -21,7 +29,6 @@ const SaveHeader: React.FC<Props> = ({ header }) => {
   const isRanked = header.stats.apRank && header.stats.apRank !== 'NR' && !header.stats.apRank.includes('Unranked');
 
   // RUTHLESS Sentiment Color Logic
-  // In the 90s, 50% approval meant half the town wanted you fired.
   const getSentimentColor = (val: number) => {
     if (val < 50) return "text-red-500 animate-pulse";
     if (val < 75) return "text-amber-500";
@@ -36,11 +43,20 @@ const SaveHeader: React.FC<Props> = ({ header }) => {
       {/* Top Bar: Team, Record, Date */}
       <div className="grid grid-cols-12 gap-0 border-b border-slate-800">
         {/* Team & Role (Left) */}
-        <div className="col-span-12 md:col-span-5 p-4 flex items-center space-x-4 border-b md:border-b-0 md:border-r border-slate-800 bg-slate-800/50">
-           <div className={`w-12 h-12 rounded-full flex items-center justify-center border-2 shadow-inner relative ${isHotSeat ? 'bg-red-900/20 border-red-500/50' : 'bg-slate-700 border-slate-600'}`}>
-             <Shield className={`w-6 h-6 ${isHotSeat ? 'text-red-400' : 'text-slate-300'}`} />
+        <div 
+          className="col-span-12 md:col-span-5 p-4 flex items-center space-x-4 border-b md:border-b-0 md:border-r border-slate-800 relative overflow-hidden"
+          style={{ backgroundColor: `${primaryColor}15` }} // 15% opacity background tint
+        >
+           {/* Team Accent Bar */}
+           <div className="absolute left-0 top-0 bottom-0 w-1.5" style={{ backgroundColor: secondaryColor }}></div>
+
+           <div 
+              className={`w-12 h-12 rounded-full flex items-center justify-center border-2 shadow-inner relative z-10`}
+              style={{ backgroundColor: primaryColor, borderColor: secondaryColor }}
+           >
+             <Shield className="w-6 h-6 text-white" />
            </div>
-           <div>
+           <div className="relative z-10">
              <h2 className="text-xl font-black text-white leading-none tracking-tight">{header.team.toUpperCase()}</h2>
              <div className="flex items-center space-x-3 mt-1">
                 <div className="flex items-center space-x-1">
@@ -153,7 +169,7 @@ const SaveHeader: React.FC<Props> = ({ header }) => {
            <div className="flex-1 overflow-hidden">
               <span className="text-slate-500 font-bold uppercase tracking-wider text-[10px] block mb-1">Coach Tags</span>
               <div className="flex flex-wrap gap-1">
-                {header.reputationTags.slice(0, 3).map((tag, idx) => (
+                {header.reputationTags.slice(0, 5).map((tag, idx) => (
                     <span key={idx} className="bg-slate-800 text-slate-400 px-1.5 py-0.5 rounded text-[10px] whitespace-nowrap">{tag}</span>
                 ))}
               </div>

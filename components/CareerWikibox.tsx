@@ -1,6 +1,7 @@
+
 import React, { useState, useMemo } from 'react';
-import { CareerLog, Connection } from '../types';
-import { X, User, Briefcase, Users, Trophy } from 'lucide-react';
+import { CareerLog, Connection, TeamStats } from '../types';
+import { X, User, Briefcase, Users, Trophy, Filter, Search, Shield, HeartHandshake, Skull, Calendar, Sprout, GraduationCap, BarChart3, TrendingUp, TrendingDown, Crown } from 'lucide-react';
 
 interface Props {
   history: CareerLog[];
@@ -17,11 +18,16 @@ interface Tenure {
   endYear: number;
   team: string;
   role: string;
-  achievements: string[];
+  record: string; // Aggregate record for this specific tenure if possible
+  seasons: CareerLog[]; // Store full logs to show stats per year
 }
 
 const CareerWikibox: React.FC<Props> = ({ history, network = [], currentRole, currentTeam, age, currentYear, onClose }) => {
   const [activeTab, setActiveTab] = useState<'history' | 'network'>('history');
+  
+  // Network Filters
+  const [loyaltyFilter, setLoyaltyFilter] = useState<string>('All');
+  const [relationSearch, setRelationSearch] = useState<string>('');
 
   // Calculate Birth Year dynamically based on current game state
   const birthYear = currentYear - age;
@@ -34,26 +40,22 @@ const CareerWikibox: React.FC<Props> = ({ history, network = [], currentRole, cu
     let current: Tenure | null = null;
 
     history.forEach((log) => {
-      // Extract main result keywords for display
-      const notableResult = log.result.toLowerCase().match(/(champion|bowl|playoff|fired|promoted)/i) 
-        ? log.result 
-        : null;
-
       if (!current) {
         current = {
           startYear: log.year,
           endYear: log.year,
           team: log.team,
           role: log.role,
-          achievements: notableResult ? [`${log.year}: ${notableResult}`] : []
+          record: log.record,
+          seasons: [log]
         };
       } else {
         // If team and role match, extend tenure
         if (log.team === current.team && log.role === current.role) {
           current.endYear = log.year;
-          if (notableResult) {
-             current.achievements.push(`${log.year}: ${notableResult}`);
-          }
+          current.seasons.push(log);
+          // Update record to latest season record (User might want cumulative, but log stores season. 
+          // For visualization, we keep the season logs array)
         } else {
           groups.push(current);
           current = {
@@ -61,230 +63,317 @@ const CareerWikibox: React.FC<Props> = ({ history, network = [], currentRole, cu
             endYear: log.year,
             team: log.team,
             role: log.role,
-            achievements: notableResult ? [`${log.year}: ${notableResult}`] : []
+            record: log.record,
+            seasons: [log]
           };
         }
       }
     });
     if (current) groups.push(current);
     
-    // Add "Current" if the last history log is older than current year or if history is empty but game started
-    // Actually, usually history updates at end of season. 
-    // If current year > last log year, we show "Present" for current role?
-    // For simplicity, we just list completed seasons in history, and show "Current" in the header.
-    
-    return groups;
+    // Reverse to show newest first
+    return groups.reverse();
   }, [history]);
 
-  const getLoyaltyColor = (level: string) => {
+  // Derived Network Data
+  const filteredNetwork = useMemo(() => {
+    return network.filter(person => {
+      const matchLoyalty = loyaltyFilter === 'All' || person.loyalty === loyaltyFilter;
+      const matchSearch = !relationSearch || 
+                          person.relation.toLowerCase().includes(relationSearch.toLowerCase()) || 
+                          person.name.toLowerCase().includes(relationSearch.toLowerCase());
+      return matchLoyalty && matchSearch;
+    });
+  }, [network, loyaltyFilter, relationSearch]);
+
+  const splitNetwork = useMemo(() => {
+     const mentors: Connection[] = [];
+     const tree: Connection[] = []; // Former assistants, players, etc.
+     
+     filteredNetwork.forEach(p => {
+         const rel = p.relation.toLowerCase();
+         if (rel.includes('boss') || rel.includes('ad') || rel.includes('mentor') || rel.includes('hired you')) {
+             mentors.push(p);
+         } else {
+             tree.push(p);
+         }
+     });
+     return { mentors, tree };
+  }, [filteredNetwork]);
+
+  const getLoyaltyIcon = (level: string) => {
     switch(level) {
-        case 'High': return 'text-emerald-600 bg-emerald-100';
-        case 'Medium': return 'text-blue-600 bg-blue-100';
-        case 'Low': return 'text-amber-600 bg-amber-100';
-        case 'Rival': return 'text-red-600 bg-red-100';
-        default: return 'text-slate-600 bg-slate-100';
+        case 'High': return <HeartHandshake className="w-4 h-4 text-emerald-600" />;
+        case 'Medium': return <Users className="w-4 h-4 text-blue-600" />;
+        case 'Low': return <Shield className="w-4 h-4 text-amber-600" />;
+        case 'Rival': return <Skull className="w-4 h-4 text-red-600" />;
+        default: return <User className="w-4 h-4 text-slate-400" />;
     }
   };
 
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4 animate-fade-in font-sans">
-      <div className="bg-white text-slate-900 shadow-2xl max-w-lg w-full border border-slate-400 relative max-h-[90vh] flex flex-col rounded-sm overflow-hidden">
-        
-        {/* Close Button */}
-        <button 
-            onClick={onClose}
-            className="absolute top-2 right-2 bg-slate-100 text-slate-500 hover:text-red-500 p-1.5 rounded-full hover:bg-slate-200 transition-colors z-50"
-        >
-            <X className="w-5 h-5" />
-        </button>
+  const getHCRecord = () => {
+    let wins = 0;
+    let losses = 0;
+    let ties = 0;
+    history.forEach(log => {
+        // STRICT FILTER: Only count HC roles for the Topline Career Record
+        const r = log.role.toLowerCase();
+        if ((r.includes('head coach') && !r.includes('assistant head')) || r === 'hc' || r.includes('interim hc')) {
+            const parts = log.record.split(/[-–]/).map(s => parseInt(s.trim(), 10));
+            if (!isNaN(parts[0])) wins += parts[0];
+            if (!isNaN(parts[1])) losses += parts[1];
+            if (parts.length > 2 && !isNaN(parts[2])) ties += parts[2];
+        }
+    });
+    return `${wins}-${losses}${ties > 0 ? `-${ties}` : ''}`;
+  };
 
-        {/* Header Content */}
-        <div className="p-5 border-b border-slate-200 bg-slate-50">
-            <h3 className="font-serif font-bold text-3xl leading-tight text-slate-900">Jacob Rhinehart</h3>
-            <p className="text-sm text-slate-600 mt-1">American football coach</p>
+  const getRankColor = (rankStr?: string) => {
+    if (!rankStr) return 'text-slate-400';
+    const rank = parseInt(rankStr.replace('#', ''));
+    if (isNaN(rank)) return 'text-slate-400'; 
+    if (rank <= 10) return 'text-emerald-600 font-bold';
+    if (rank <= 25) return 'text-amber-600 font-bold';
+    return 'text-slate-500';
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-fade-in">
+      <div className="bg-slate-50 w-full max-w-4xl max-h-[90vh] rounded-lg shadow-2xl overflow-hidden flex flex-col text-slate-900">
+        
+        {/* Header */}
+        <div className="bg-slate-200 border-b border-slate-300 p-6 flex justify-between items-start">
+          <div className="flex items-start space-x-6">
+            <div className="w-24 h-32 bg-slate-300 border-4 border-white shadow-md flex items-center justify-center overflow-hidden">
+               <User className="w-12 h-12 text-slate-400" />
+            </div>
+            <div>
+               <h2 className="text-3xl font-serif font-bold text-slate-900 leading-none mb-2">Jacob Rhinehart</h2>
+               <div className="space-y-1 text-sm text-slate-600">
+                  <div className="flex items-center space-x-2">
+                     <span className="font-bold w-28">Born:</span>
+                     <span>{birthYear} (Age {age})</span>
+                  </div>
+                  <div className="flex items-center space-x-2">
+                     <span className="font-bold w-28">Current Role:</span>
+                     <span className="flex items-center">
+                        <Briefcase className="w-3 h-3 mr-1" />
+                        {currentRole} at {currentTeam}
+                     </span>
+                  </div>
+                  <div className="flex items-center space-x-2">
+                     <span className="font-bold w-28">HC Record:</span>
+                     <span className="font-mono bg-slate-800 text-white px-1.5 rounded text-xs flex items-center gap-1">
+                        <Crown className="w-3 h-3 text-amber-400" />
+                        {getHCRecord()}
+                     </span>
+                  </div>
+               </div>
+            </div>
+          </div>
+          <button onClick={onClose} className="p-2 hover:bg-slate-300 rounded-full transition-colors">
+            <X className="w-6 h-6 text-slate-500" />
+          </button>
         </div>
 
         {/* Tabs */}
-        <div className="flex border-b border-slate-300 bg-white text-sm">
-            <button 
-                onClick={() => setActiveTab('history')}
-                className={`flex-1 py-3 px-4 font-bold uppercase tracking-wider flex items-center justify-center space-x-2 transition-colors border-b-2 ${activeTab === 'history' ? 'border-blue-600 text-blue-700 bg-blue-50/50' : 'border-transparent text-slate-500 hover:bg-slate-50'}`}
-            >
-                <Briefcase className="w-4 h-4" />
-                <span>Career</span>
-            </button>
-            <button 
-                onClick={() => setActiveTab('network')}
-                className={`flex-1 py-3 px-4 font-bold uppercase tracking-wider flex items-center justify-center space-x-2 transition-colors border-b-2 ${activeTab === 'network' ? 'border-blue-600 text-blue-700 bg-blue-50/50' : 'border-transparent text-slate-500 hover:bg-slate-50'}`}
-            >
-                <Users className="w-4 h-4" />
-                <span>Connections</span>
-            </button>
+        <div className="flex border-b border-slate-300 bg-white">
+           <button 
+             onClick={() => setActiveTab('history')}
+             className={`flex-1 py-3 text-sm font-bold uppercase tracking-wider flex items-center justify-center space-x-2 transition-colors
+               ${activeTab === 'history' ? 'border-b-4 border-emerald-600 text-emerald-700 bg-emerald-50' : 'text-slate-500 hover:bg-slate-50'}
+             `}
+           >
+             <Calendar className="w-4 h-4" />
+             <span>Career Log</span>
+           </button>
+           <button 
+             onClick={() => setActiveTab('network')}
+             className={`flex-1 py-3 text-sm font-bold uppercase tracking-wider flex items-center justify-center space-x-2 transition-colors
+               ${activeTab === 'network' ? 'border-b-4 border-blue-600 text-blue-700 bg-blue-50' : 'text-slate-500 hover:bg-slate-50'}
+             `}
+           >
+             <Users className="w-4 h-4" />
+             <span>Coaching Tree ({network.length})</span>
+           </button>
         </div>
 
         {/* Content Area */}
-        <div className="flex-1 overflow-y-auto bg-white p-0">
-            
-            {/* TAB: HISTORY (Infobox Style) */}
-            {activeTab === 'history' && (
-                <div className="flex flex-col md:flex-row">
-                    {/* Infobox Sidebar (Wikipedia Style) */}
-                    <div className="w-full md:w-5/12 bg-[#f8f9fa] border-b md:border-b-0 md:border-r border-[#a2a9b1] p-4 text-sm leading-snug">
-                         <div className="mb-4 text-center">
-                            <div className="w-24 h-24 mx-auto bg-slate-200 rounded border border-slate-300 flex items-center justify-center text-slate-400 mb-2">
-                                <User className="w-12 h-12" />
-                            </div>
-                            <div className="font-bold text-slate-900">Jacob Rhinehart</div>
-                         </div>
-                         
-                         <h4 className="bg-[#eaecf0] font-bold text-center border-t border-b border-[#a2a9b1] py-1 mb-2">Personal information</h4>
-                         <div className="grid grid-cols-[1fr,2fr] gap-x-2 gap-y-1 mb-3">
-                             <div className="font-bold text-slate-700">Born</div>
-                             <div>{birthYear} (age {age})</div>
-                         </div>
-
-                         <h4 className="bg-[#eaecf0] font-bold text-center border-t border-b border-[#a2a9b1] py-1 mb-2">Career information</h4>
-                         <div className="grid grid-cols-[1fr,2fr] gap-x-2 gap-y-1 mb-3">
-                             <div className="font-bold text-slate-700">Current team</div>
-                             <div>{currentTeam}</div>
-                             <div className="font-bold text-slate-700">Position</div>
-                             <div>{currentRole}</div>
-                         </div>
-
-                         <h4 className="bg-[#eaecf0] font-bold text-center border-t border-b border-[#a2a9b1] py-1 mb-2">Career history</h4>
-                         <div className="space-y-1">
-                             {tenures.length === 0 ? (
-                                <div className="text-slate-500 italic text-xs">No history yet</div>
-                             ) : (
-                                 tenures.map((t, i) => (
-                                     <div key={i} className="grid grid-cols-[auto,1fr] gap-x-2 text-xs">
-                                         <div className="font-mono text-slate-600 whitespace-nowrap">
-                                             {t.startYear === t.endYear ? t.startYear : `${t.startYear}–${t.endYear}`}
-                                         </div>
-                                         <div>
-                                             <span className="font-bold">{t.team}</span>
-                                             <span className="block text-slate-500 text-[10px]">{t.role}</span>
-                                         </div>
-                                     </div>
-                                 ))
-                             )}
-                              {/* Current Job Entry (Projected) */}
-                             <div className="grid grid-cols-[auto,1fr] gap-x-2 text-xs mt-1 bg-blue-50/50 p-1 -mx-1 rounded">
-                                 <div className="font-mono text-blue-600 whitespace-nowrap">
-                                     {currentYear}–
-                                 </div>
-                                 <div>
-                                     <span className="font-bold text-slate-900">{currentTeam}</span>
-                                     <span className="block text-slate-500 text-[10px]">{currentRole}</span>
-                                 </div>
-                             </div>
-                         </div>
-                    </div>
-
-                    {/* Main Content: Detailed Stats Table */}
-                    <div className="flex-1 p-4">
-                        <h4 className="font-serif font-bold text-lg border-b border-slate-300 pb-1 mb-3 text-slate-800">Head coaching record</h4>
-                        
-                        <div className="overflow-x-auto border border-slate-300 shadow-sm">
-                            <table className="w-full text-xs text-left border-collapse bg-white">
-                                <thead className="bg-[#eaecf0]">
-                                    <tr>
-                                        <th className="p-2 border border-slate-300 font-bold w-12 text-center">Year</th>
-                                        <th className="p-2 border border-slate-300 font-bold">Team</th>
-                                        <th className="p-2 border border-slate-300 font-bold">Role</th>
-                                        <th className="p-2 border border-slate-300 font-bold text-center">Rec</th>
-                                        <th className="p-2 border border-slate-300 font-bold">Bowl/Playoffs</th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    {history.length === 0 ? (
-                                        <tr><td colSpan={5} className="p-6 text-center text-slate-500 italic">No completed seasons.</td></tr>
-                                    ) : (
-                                        history.map((log, idx) => (
-                                            <tr key={idx} className="hover:bg-slate-50 transition-colors border-b border-slate-200">
-                                                <td className="p-2 border-r border-slate-200 text-center font-mono font-bold text-slate-700">{log.year}</td>
-                                                <td className="p-2 border-r border-slate-200 font-bold text-slate-900">{log.team}</td>
-                                                <td className="p-2 border-r border-slate-200 text-slate-600">{log.role}</td>
-                                                <td className="p-2 border-r border-slate-200 text-center font-mono">{log.record}</td>
-                                                <td className="p-2">
-                                                    <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${log.result.toLowerCase().includes('fired') ? 'bg-red-100 text-red-700' : (log.result.toLowerCase().includes('champion') || log.result.toLowerCase().includes('bowl win')) ? 'bg-amber-100 text-amber-700' : 'bg-slate-100 text-slate-600'}`}>
-                                                        {log.result}
-                                                    </span>
-                                                </td>
-                                            </tr>
-                                        ))
-                                    )}
-                                </tbody>
-                            </table>
+        <div className="flex-1 overflow-y-auto bg-slate-100 p-6 custom-scrollbar">
+           
+           {/* HISTORY VIEW */}
+           {activeTab === 'history' && (
+             <div className="space-y-4">
+                {tenures.map((tenure, idx) => (
+                  <div key={idx} className="bg-white rounded-lg shadow-sm border border-slate-200 overflow-hidden">
+                     {/* Tenure Header */}
+                     <div className="bg-slate-50 px-4 py-3 border-b border-slate-200 flex justify-between items-center">
+                        <div className="flex items-center gap-3">
+                            <h3 className="font-bold text-lg text-slate-800">{tenure.team}</h3>
+                            <span className="text-xs font-mono bg-white px-2 py-0.5 rounded text-slate-600 uppercase border border-slate-200">{tenure.role}</span>
                         </div>
-                        
-                        <div className="mt-4 p-3 bg-amber-50 border border-amber-200 rounded text-xs text-amber-800 flex items-start space-x-2">
-                             <Trophy className="w-4 h-4 flex-shrink-0 mt-0.5" />
-                             <div>
-                                <span className="font-bold">Career Highlights:</span>
-                                <ul className="list-disc list-inside mt-1 space-y-0.5 ml-1">
-                                    {tenures.flatMap(t => t.achievements).length > 0 ? (
-                                        tenures.flatMap(t => t.achievements).map((a, i) => (
-                                            <li key={i}>{a}</li>
-                                        ))
-                                    ) : (
-                                        <span className="italic opacity-75 ml-1">None yet.</span>
-                                    )}
-                                </ul>
-                             </div>
+                        <div className="text-xs font-bold text-slate-500">
+                           {tenure.startYear === tenure.endYear ? tenure.startYear : `${tenure.startYear}-${tenure.endYear}`}
                         </div>
-                    </div>
-                </div>
-            )}
+                     </div>
 
-            {/* TAB: NETWORK */}
-            {activeTab === 'network' && (
-                <div className="p-4 space-y-3">
-                    <div className="bg-slate-50 p-3 text-xs text-slate-600 border border-slate-200 rounded italic mb-4">
-                        "The Coaching Tree tracks allies, rivals, and mentors encountered throughout the career."
-                    </div>
-
-                    {network.length === 0 ? (
-                        <div className="flex flex-col items-center justify-center py-12 text-slate-400">
-                            <Users className="w-12 h-12 mb-3 opacity-20" />
-                            <p className="text-sm font-medium">Your network is empty.</p>
-                        </div>
-                    ) : (
-                        <div className="grid grid-cols-1 gap-3">
-                            {network.map((person, idx) => (
-                                <div key={idx} className="flex items-start bg-white p-3 rounded border border-slate-200 shadow-sm hover:shadow-md transition-shadow group">
-                                    <div className="w-10 h-10 rounded-full bg-slate-100 flex items-center justify-center mr-3 border border-slate-200 group-hover:bg-slate-200 transition-colors">
-                                        <User className="w-5 h-5 text-slate-400 group-hover:text-slate-600" />
-                                    </div>
-                                    <div className="flex-1">
-                                        <div className="flex justify-between items-start">
-                                            <h5 className="font-bold text-slate-900 text-sm">{person.name}</h5>
-                                            <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded uppercase tracking-wide ${getLoyaltyColor(person.loyalty)}`}>
-                                                {person.loyalty}
-                                            </span>
-                                        </div>
-                                        <div className="text-xs text-slate-500 font-bold uppercase mt-0.5">{person.relation}</div>
-                                        <div className="flex items-center mt-2 text-xs text-slate-700 bg-slate-50 p-1.5 rounded border border-slate-100">
-                                            <Briefcase className="w-3 h-3 mr-1.5 text-slate-400" />
-                                            <span className="font-mono">{person.currentRole}</span>
-                                        </div>
-                                    </div>
+                     {/* Seasons Table */}
+                     <div className="divide-y divide-slate-100">
+                        {tenure.seasons.map((season, sIdx) => (
+                            <div key={sIdx} className="p-3 text-sm flex flex-col md:flex-row md:items-center justify-between hover:bg-slate-50 transition-colors">
+                                <div className="flex items-center gap-4 mb-2 md:mb-0 w-1/3">
+                                    <span className="font-mono font-bold text-slate-400 w-10">{season.year}</span>
+                                    <span className="font-bold text-slate-900 w-16">{season.record}</span>
+                                    <span className="text-slate-600 truncate flex-1">{season.result}</span>
                                 </div>
-                            ))}
+                                
+                                {/* Historical Stats Snapshot */}
+                                {season.statsSnapshot ? (
+                                    <div className="flex items-center gap-4 text-xs font-mono">
+                                        <div className="flex items-center gap-1" title="Offensive Rank">
+                                            <TrendingUp className="w-3 h-3 text-slate-400" />
+                                            <span className={getRankColor(season.statsSnapshot.offRank)}>Off: {season.statsSnapshot.offRank}</span>
+                                        </div>
+                                        <div className="flex items-center gap-1" title="Defensive Rank">
+                                            <Shield className="w-3 h-3 text-slate-400" />
+                                            <span className={getRankColor(season.statsSnapshot.defRank)}>Def: {season.statsSnapshot.defRank}</span>
+                                        </div>
+                                        <div className="flex items-center gap-1" title="AP Poll Rank">
+                                            <Trophy className="w-3 h-3 text-slate-400" />
+                                            <span className={getRankColor(season.statsSnapshot.apRank)}>AP: {season.statsSnapshot.apRank}</span>
+                                        </div>
+                                    </div>
+                                ) : (
+                                    <div className="text-xs text-slate-400 italic">No detailed stats archived</div>
+                                )}
+                            </div>
+                        ))}
+                     </div>
+                  </div>
+                ))}
+                
+                {tenures.length === 0 && (
+                  <div className="text-center py-12 text-slate-400">
+                    <Briefcase className="w-12 h-12 mx-auto mb-2 opacity-20" />
+                    <p>No career history logged yet.</p>
+                  </div>
+                )}
+             </div>
+           )}
+
+           {/* NETWORK VIEW */}
+           {activeTab === 'network' && (
+             <div className="h-full flex flex-col">
+                {/* Filters */}
+                <div className="flex flex-col md:flex-row gap-4 mb-6">
+                  <div className="relative flex-1">
+                    <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+                    <input 
+                      type="text" 
+                      placeholder="Search contacts..." 
+                      value={relationSearch}
+                      onChange={(e) => setRelationSearch(e.target.value)}
+                      className="w-full pl-9 pr-4 py-2 rounded border border-slate-300 text-sm focus:ring-2 focus:ring-blue-500 outline-none transition-shadow"
+                    />
+                  </div>
+                  <div className="flex items-center space-x-2">
+                     <Filter className="w-4 h-4 text-slate-500" />
+                     <select 
+                       value={loyaltyFilter}
+                       onChange={(e) => setLoyaltyFilter(e.target.value)}
+                       className="bg-white border border-slate-300 rounded px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500 transition-shadow"
+                     >
+                       <option value="All">All Relations</option>
+                       <option value="High">High Loyalty</option>
+                       <option value="Medium">Medium Loyalty</option>
+                       <option value="Low">Low Loyalty</option>
+                       <option value="Rival">Rivals</option>
+                     </select>
+                  </div>
+                </div>
+
+                <div className="space-y-6">
+                    {/* Mentors Section */}
+                    {splitNetwork.mentors.length > 0 && (
+                        <div>
+                             <h4 className="flex items-center space-x-2 text-sm font-bold uppercase text-slate-500 mb-3 border-b border-slate-300 pb-1">
+                                <GraduationCap className="w-4 h-4" />
+                                <span>Mentors & Bosses</span>
+                             </h4>
+                             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                {splitNetwork.mentors.map((person, idx) => (
+                                    <div key={idx} className="bg-slate-50 p-4 rounded-lg shadow-sm border border-slate-200 flex items-start space-x-3">
+                                        <div className={`p-2 rounded-full flex-shrink-0 bg-white border border-slate-100`}>
+                                            {getLoyaltyIcon(person.loyalty)}
+                                        </div>
+                                        <div className="flex-1 min-w-0">
+                                            <div className="flex justify-between items-start mb-1">
+                                                <h4 className="font-bold text-slate-900 truncate pr-2">{person.name}</h4>
+                                                <span className={`text-[10px] uppercase font-bold px-1.5 py-0.5 rounded border whitespace-nowrap
+                                                    ${person.loyalty === 'High' ? 'bg-emerald-50 text-emerald-600 border-emerald-200' : ''}
+                                                    ${person.loyalty === 'Rival' ? 'bg-red-50 text-red-600 border-red-200' : ''}
+                                                    ${person.loyalty === 'Medium' ? 'bg-blue-50 text-blue-600 border-blue-200' : ''}
+                                                `}>
+                                                    {person.loyalty}
+                                                </span>
+                                            </div>
+                                            <p className="text-xs text-slate-600 font-bold mb-0.5">{person.currentRole}</p>
+                                            <p className="text-xs text-slate-400 italic truncate">{person.relation}</p>
+                                        </div>
+                                    </div>
+                                ))}
+                             </div>
+                        </div>
+                    )}
+
+                    {/* Coaching Tree Section */}
+                    {splitNetwork.tree.length > 0 && (
+                        <div>
+                             <h4 className="flex items-center space-x-2 text-sm font-bold uppercase text-slate-500 mb-3 border-b border-slate-300 pb-1">
+                                <Sprout className="w-4 h-4 text-emerald-600" />
+                                <span>Coaching Tree</span>
+                             </h4>
+                             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                {splitNetwork.tree.map((person, idx) => (
+                                    <div key={idx} className="bg-white p-4 rounded-lg shadow-sm border border-slate-200 flex items-start space-x-3 hover:shadow-md transition-shadow">
+                                        <div className={`p-2 rounded-full flex-shrink-0 bg-slate-50`}>
+                                            {getLoyaltyIcon(person.loyalty)}
+                                        </div>
+                                        <div className="flex-1 min-w-0">
+                                            <div className="flex justify-between items-start mb-1">
+                                                <h4 className="font-bold text-slate-900 truncate pr-2">{person.name}</h4>
+                                                <span className={`text-[10px] uppercase font-bold px-1.5 py-0.5 rounded border whitespace-nowrap
+                                                    ${person.loyalty === 'High' ? 'bg-emerald-50 text-emerald-600 border-emerald-200' : ''}
+                                                    ${person.loyalty === 'Rival' ? 'bg-red-50 text-red-600 border-red-200' : ''}
+                                                    ${person.loyalty === 'Medium' ? 'bg-blue-50 text-blue-600 border-blue-200' : ''}
+                                                    ${person.loyalty === 'Low' ? 'bg-amber-50 text-amber-600 border-amber-200' : ''}
+                                                `}>
+                                                    {person.loyalty}
+                                                </span>
+                                            </div>
+                                            <p className="text-xs text-slate-600 font-bold mb-0.5">{person.currentRole}</p>
+                                            <p className="text-xs text-slate-400 italic truncate">{person.relation}</p>
+                                        </div>
+                                    </div>
+                                ))}
+                             </div>
+                        </div>
+                    )}
+
+                    {filteredNetwork.length === 0 && (
+                        <div className="text-center py-12 text-slate-400">
+                            <Users className="w-12 h-12 mx-auto mb-2 opacity-20" />
+                            <p>No connections found matching filters.</p>
                         </div>
                     )}
                 </div>
-            )}
+             </div>
+           )}
 
-        </div>
-
-        {/* Footer */}
-        <div className="bg-[#f8f9fa] border-t border-slate-300 p-2 text-center text-[10px] text-slate-500">
-           Last updated: {currentYear}
         </div>
       </div>
     </div>
   );
-}
+};
 
 export default CareerWikibox;

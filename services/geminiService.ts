@@ -1,285 +1,464 @@
-/**
- * OPTIMIZED GEMINI SERVICE
- * 
- * Changes from original:
- * 1. Uses proxy (no exposed API key)
- * 2. Uses local game engine for deterministic logic
- * 3. Caches responses to reduce API calls
- * 4. Reduced token usage (2048 vs 8192)
- * 5. Slimmed system prompt
- */
 
-import { TurnLog, JobOffer } from '../types';
-import { SYSTEM_INSTRUCTION_SLIM } from '../constants';
-import {
-  calculatePhaseTransition,
-  simulateGameBlock,
-  applyTransition,
-  buildMinimalContext,
-  getYearFromDate,
-  parseRecord,
-  PhaseTransition,
-  SimulateGameBlockOptions,
-} from './gameEngine';
-import { generateCacheKey, getCachedResponse, setCachedResponse } from './cache';
-import {
-  generateLocalNarrative,
-  saveHeaderToGameContext,
-  timelineToGamePhase,
-  getTeamById,
-  generateJobOpenings,
-  teamToJobOffer,
-  Team,
-  NFLTeam,
-} from '../engine';
+import { GoogleGenAI, Type, Schema } from "@google/genai";
+import { TurnLog, SaveHeader, CareerLog, Connection, TeamStats, JobOffer, RosterDNA, BlackBookEntry, StaffState, CoachingPhilosophy, CoachingCapital, EarnedTrait } from '../types';
+import { SYSTEM_INSTRUCTION as BASE_SYSTEM_INSTRUCTION, CONFERENCES_BY_ERA, getPostseasonFormat, TACTICAL_META } from '../constants';
 
-// ============================================
-// CONFIGURATION
-// ============================================
+const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+const MODEL_NAME = 'gemini-3-flash-preview'; 
 
-// Set this to your Cloudflare Worker URL after deployment
-// For local dev, falls back to direct API call
-const PROXY_URL = import.meta.env.VITE_PROXY_URL || '';
-const USE_PROXY = PROXY_URL.length > 0;
+// --- 1. OPTIMIZED SYSTEM INSTRUCTION ---
+// Condensed for token efficiency without losing nuance.
+const REALISM_INSTRUCTION = `
+${BASE_SYSTEM_INSTRUCTION}
+**REALISM RULES (STRICT):**
+1. **CAROUSEL:** Good record != Big Job. Blue Blood jobs are scarce. "Trap Jobs" exist (High Prestige + Toxic Culture). Relegation is real (P5 HC -> G5 Coordinator).
+2. **STAFF:** Success = Poaching. If OC/DC shines, they leave.
+3. **PRESSURE:** Blue Bloods fire for 9-3. G5 accepts 6-6. Year 1 safe, Year 3 critical.
+4. **SCARCITY:** Sometimes NO offers exist.
+`;
 
-// Direct API fallback for local development only
-const API_KEY = import.meta.env.VITE_GEMINI_API_KEY || '';
-const DIRECT_API_URL = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent';
+// --- 2. MODULAR SCHEMAS ---
 
-// ============================================
-// LOCAL-FIRST MODE CONFIGURATION
-// ============================================
-
-// When true, uses local narrative generation exclusively (no API calls)
-// When false, uses AI for narrative with local fallback
-let USE_LOCAL_FIRST = true; // Default to local - zero API calls
-
-export const setLocalFirstMode = (enabled: boolean) => {
-  USE_LOCAL_FIRST = enabled;
-};
-
-export const isLocalFirstMode = () => USE_LOCAL_FIRST;
-
-// ============================================
-// SCHEMA (Slimmed - only narrative fields for AI)
-// ============================================
-
-const narrativeSchema = {
-  type: 'OBJECT',
+// A. Complex Sub-Schemas
+const mediaContentSchema = {
+  type: Type.OBJECT,
   properties: {
-    mediaHeadline: { type: 'STRING' },
-    mediaBuzz: { type: 'STRING' },
-    staffNotes: { type: 'STRING' },
-    sceneDescription: { type: 'STRING' },
-    resolution: { type: 'STRING' },
-    openThreads: { 
-      type: 'ARRAY', 
-      items: { type: 'STRING' } 
-    },
-    choices: {
-      type: 'ARRAY',
+    headline: { type: Type.STRING },
+    source: { type: Type.STRING, enum: ['National TV', 'Local Beat', 'Tactical Blog', 'Tabloid', 'Campus Paper'] },
+    mediaNarrative: { type: Type.STRING, enum: ['The Hero', 'The Villain', 'The Hot Seat', 'The Genius', 'The Underdog', 'The Fraud'] },
+    narrativeMood: { type: Type.STRING, enum: ['Crisis', 'Euphoria', 'Skepticism', 'Apathy', 'Tension', 'Stability'] },
+    beatWriterAnalysis: { type: Type.STRING },
+    fanReactions: {
+      type: Type.ARRAY,
       items: {
-        type: 'OBJECT',
+        type: Type.OBJECT,
         properties: {
-          id: { type: 'STRING' },
-          text: { type: 'STRING' },
-          type: { type: 'STRING' },
+          source: { type: Type.STRING, enum: ['Twitter', 'MessageBoard', 'RadioCall', 'NewspaperLetter'] },
+          author: { type: Type.STRING },
+          content: { type: Type.STRING },
+          sentiment: { type: Type.STRING, enum: ['Positive', 'Negative', 'Neutral'] }
         },
-        required: ['id', 'text', 'type'],
-      },
+        required: ["source", "author", "content", "sentiment"]
+      }
     },
-    // Only for carousel phase
-    jobOffers: {
-      type: 'ARRAY',
-      nullable: true,
-      items: {
-        type: 'OBJECT',
-        properties: {
-          id: { type: 'STRING' },
-          team: { type: 'STRING' },
-          role: { type: 'STRING' },
-          conference: { type: 'STRING' },
-          prestige: { type: 'STRING' },
-          salary: { type: 'STRING' },
-          contractLength: { type: 'STRING' },
-          buyout: { type: 'STRING' },
-          pitch: { type: 'STRING' },
-          perks: { type: 'ARRAY', items: { type: 'STRING' } },
-          status: { type: 'STRING' },
-          adPatience: { type: 'STRING' }
-        },
-        required: ['id', 'team', 'role', 'pitch'],
-      },
-    },
-    // Season summary for end of season
-    seasonSummary: {
-      type: 'OBJECT',
+    interviewQuote: {
+      type: Type.OBJECT,
       nullable: true,
       properties: {
-        year: { type: 'NUMBER' },
-        finalRecord: { type: 'STRING' },
-        accomplishment: { type: 'STRING' },
-        keyStats: { type: 'ARRAY', items: { type: 'STRING' } },
-        boardFeedback: { type: 'STRING' },
+        speaker: { type: Type.STRING },
+        context: { type: Type.STRING },
+        quote: { type: Type.STRING }
       },
-    },
-    gameOver: { type: 'BOOLEAN' },
-  },
-  required: ['sceneDescription', 'choices', 'gameOver'],
-};
-
-// Full schema for initialization (needs all header fields)
-const initSchema = {
-  type: 'OBJECT',
-  properties: {
-    header: {
-      type: 'OBJECT',
-      properties: {
-        date: { type: 'STRING' },
-        age: { type: 'NUMBER' },
-        team: { type: 'STRING' },
-        conference: { type: 'STRING' },
-        role: { type: 'STRING' },
-        seasonRecord: { type: 'STRING' },
-        legacyScore: { type: 'NUMBER' },
-        fanSentiment: { type: 'NUMBER' },
-        timelinePhase: { type: 'STRING' },
-        schemeOffense: { type: 'STRING' },
-        schemeDefense: { type: 'STRING' },
-        qbSituation: { type: 'STRING' },
-        reputationTags: { type: 'ARRAY', items: { type: 'STRING' } },
-        jobSecurity: { type: 'STRING' },
-        openThreads: { type: 'ARRAY', items: { type: 'STRING' } },
-        network: {
-          type: 'ARRAY',
-          items: {
-            type: 'OBJECT',
-            properties: {
-              name: { type: 'STRING' },
-              relation: { type: 'STRING' },
-              currentRole: { type: 'STRING' },
-              loyalty: { type: 'STRING' },
-            },
-            required: ['name', 'relation', 'currentRole', 'loyalty']
-          }
-        },
-        stats: {
-          type: 'OBJECT',
-          properties: {
-            apRank: { type: 'STRING' },
-            confStanding: { type: 'STRING' },
-            offRank: { type: 'STRING' },
-            defRank: { type: 'STRING' },
-            prestige: { type: 'STRING' }
-          },
-          required: ['apRank', 'confStanding', 'offRank', 'defRank', 'prestige']
-        },
-        careerHistory: { type: 'ARRAY', items: { type: 'OBJECT' } }
-      },
-      required: ['date', 'age', 'team', 'role', 'seasonRecord', 'timelinePhase'],
-    },
-    mediaHeadline: { type: 'STRING' },
-    mediaBuzz: { type: 'STRING' },
-    staffNotes: { type: 'STRING' },
-    sceneDescription: { type: 'STRING' },
-    choices: {
-      type: 'ARRAY',
-      items: {
-        type: 'OBJECT',
-        properties: {
-          id: { type: 'STRING' },
-          text: { type: 'STRING' },
-          type: { type: 'STRING' },
-        },
-        required: ['id', 'text', 'type'],
-      },
-    },
-    gameOver: { type: 'BOOLEAN' },
-  },
-  required: ['header', 'sceneDescription', 'choices', 'gameOver'],
-};
-
-// ============================================
-// API CALL HELPERS
-// ============================================
-
-async function callGeminiViaProxy(prompt: string, schema: object, systemInstruction: string): Promise<string> {
-  const response = await fetch(PROXY_URL, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      prompt,
-      systemInstruction,
-      schema,
-    }),
-  });
-  
-  if (!response.ok) {
-    const error = await response.json().catch(() => ({ error: 'Unknown error' }));
-    if (response.status === 429) {
-      const retryAfter = error.retryAfter || 60;
-      throw new Error(`Rate limit: retry in ${retryAfter}s`);
+      required: ["speaker", "context", "quote"]
     }
-    throw new Error(error.error || `HTTP ${response.status}`);
-  }
-  
-  const data = await response.json();
-  return data.text;
-}
+  },
+  required: ["headline", "source", "mediaNarrative", "narrativeMood", "beatWriterAnalysis", "fanReactions"]
+};
 
-async function callGeminiDirect(prompt: string, schema: object, systemInstruction: string): Promise<string> {
-  if (!API_KEY) {
-    throw new Error('No API key configured. Set VITE_GEMINI_API_KEY in .env.local');
-  }
-  
-  const response = await fetch(`${DIRECT_API_URL}?key=${API_KEY}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      contents: [{ parts: [{ text: prompt }] }],
-      systemInstruction: { parts: [{ text: systemInstruction }] },
-      generationConfig: {
-        responseMimeType: 'application/json',
-        responseSchema: schema,
-        maxOutputTokens: 2048, // REDUCED from 8192
+const jobOffersSchema = {
+  type: Type.ARRAY,
+  nullable: true,
+  items: {
+    type: Type.OBJECT,
+    properties: {
+      id: { type: Type.STRING },
+      type: { type: Type.STRING, enum: ['Direct Offer', 'Interview', 'Rumor'] },
+      team: { type: Type.STRING },
+      role: { type: Type.STRING },
+      conference: { type: Type.STRING },
+      prestige: { type: Type.STRING },
+      adminCompetence: { type: Type.STRING, enum: ['Inept', 'Average', 'Clever', 'Ruthless'] },
+      salary: { type: Type.STRING },
+      contractLength: { type: Type.STRING },
+      buyout: { type: Type.STRING },
+      pitch: { type: Type.STRING },
+      perks: { type: Type.ARRAY, items: { type: Type.STRING } },
+      status: { type: Type.STRING, enum: ["New", "Negotiating", "Final Offer", "Rescinded", "Interviewing"] },
+      adPatience: { type: Type.STRING, enum: ["High", "Medium", "Low", "Zero"] },
+      staffPerception: { type: Type.STRING, enum: ['Safe Pair of Hands', 'High Upside Gamble', 'System Fit', 'Cheap Option', 'Desperation Hire'] },
+      fanPerception: { type: Type.STRING, enum: ['Home Run', 'Solid Choice', 'Underwhelming', 'Who?', 'Outrage'] },
+      rosterSnapshot: {
+          type: Type.OBJECT,
+          properties: {
+              talentLevel: { type: Type.STRING, enum: ['Elite', 'Good', 'Average', 'Depleted'] },
+              cultureHealth: { type: Type.STRING, enum: ['Strong', 'Fragile', 'Toxic'] },
+              primaryNeed: { type: Type.STRING }
+          },
+          required: ["talentLevel", "cultureHealth", "primaryNeed"]
       },
-      safetySettings: [
-        { category: 'HARM_CATEGORY_HARASSMENT', threshold: 'BLOCK_NONE' },
-        { category: 'HARM_CATEGORY_HATE_SPEECH', threshold: 'BLOCK_NONE' },
-        { category: 'HARM_CATEGORY_SEXUALLY_EXPLICIT', threshold: 'BLOCK_NONE' },
-        { category: 'HARM_CATEGORY_DANGEROUS_CONTENT', threshold: 'BLOCK_NONE' },
-      ],
-    }),
-  });
+      marketBuzz: { type: Type.STRING }
+    },
+    required: ["id", "type", "team", "role", "conference", "prestige", "adminCompetence", "salary", "contractLength", "buyout", "pitch", "perks", "status", "adPatience", "staffPerception", "fanPerception", "rosterSnapshot", "marketBuzz"],
+  },
+};
+
+// B. Base Properties (Common to all phases)
+const baseSchemaProperties = {
+    sceneDescription: { type: Type.STRING },
+    mediaContent: mediaContentSchema,
+    headerUpdates: {
+        type: Type.OBJECT,
+        properties: {
+            adminCompetence: { type: Type.STRING, enum: ['Inept', 'Average', 'Clever', 'Ruthless'] },
+            fanSentiment: { type: Type.NUMBER },
+            jobSecurity: { type: Type.STRING },
+            legacyScore: { type: Type.NUMBER },
+            reputationTags: { type: Type.ARRAY, items: { type: Type.STRING } },
+            openThreads: { type: Type.ARRAY, items: { type: Type.STRING } },
+            seasonRecord: { type: Type.STRING },
+            stats: {
+                type: Type.OBJECT,
+                properties: {
+                    apRank: { type: Type.STRING },
+                    confStanding: { type: Type.STRING },
+                    offRank: { type: Type.STRING },
+                    defRank: { type: Type.STRING },
+                    prestige: { type: Type.STRING }
+                },
+                required: ["apRank", "confStanding", "offRank", "defRank", "prestige"]
+            },
+            rosterDNA: {
+                type: Type.OBJECT,
+                properties: {
+                    style: { type: Type.STRING, enum: ['Developer', 'Mercenary', 'Recruiter', 'Tactician'] },
+                    score: { type: Type.NUMBER }
+                },
+                required: ["style", "score"]
+            },
+            philosophy: {
+                type: Type.OBJECT,
+                properties: {
+                    aggression: { type: Type.NUMBER },
+                    discipline: { type: Type.NUMBER },
+                    adaptability: { type: Type.NUMBER },
+                    mediaSavvy: { type: Type.NUMBER }
+                }
+            },
+            capital: {
+                type: Type.OBJECT,
+                properties: {
+                    political: { type: Type.NUMBER },
+                    social: { type: Type.NUMBER }
+                }
+            },
+            newTraits: {
+                type: Type.ARRAY,
+                items: {
+                    type: Type.OBJECT,
+                    properties: {
+                        id: { type: Type.STRING },
+                        label: { type: Type.STRING },
+                        description: { type: Type.STRING },
+                        type: { type: Type.STRING, enum: ['Positive', 'Negative', 'Neutral'] },
+                        icon: { type: Type.STRING }
+                    },
+                    required: ["id", "label", "description", "type", "icon"]
+                }
+            },
+            staff: {
+               type: Type.OBJECT,
+               properties: {
+                   staffChemistry: { type: Type.NUMBER },
+                   oc: { 
+                       type: Type.OBJECT, 
+                       nullable: true, 
+                       properties: {
+                            name: { type: Type.STRING },
+                            age: { type: Type.NUMBER },
+                            role: { type: Type.STRING },
+                            playcalling: { type: Type.NUMBER },
+                            recruiting: { type: Type.NUMBER },
+                            style: { type: Type.STRING },
+                            loyalty: { type: Type.STRING, enum: ['High', 'Medium', 'Low'] },
+                            ambition: { type: Type.STRING, enum: ['High', 'Medium', 'Low'] },
+                            yearsWithTeam: { type: Type.NUMBER },
+                            status: { type: Type.STRING, enum: ['Active', 'Poached', 'Fired', 'Retiring'] }
+                       },
+                       required: ["name", "playcalling", "style", "status"]
+                   },
+                   dc: { 
+                        type: Type.OBJECT, 
+                        nullable: true, 
+                        properties: {
+                             name: { type: Type.STRING },
+                             age: { type: Type.NUMBER },
+                             role: { type: Type.STRING },
+                             playcalling: { type: Type.NUMBER },
+                             recruiting: { type: Type.NUMBER },
+                             style: { type: Type.STRING },
+                             loyalty: { type: Type.STRING, enum: ['High', 'Medium', 'Low'] },
+                             ambition: { type: Type.STRING, enum: ['High', 'Medium', 'Low'] },
+                             yearsWithTeam: { type: Type.NUMBER },
+                             status: { type: Type.STRING, enum: ['Active', 'Poached', 'Fired', 'Retiring'] }
+                        },
+                        required: ["name", "playcalling", "style", "status"]
+                   }
+               }
+            },
+            networkUpdates: {
+                type: Type.ARRAY,
+                items: {
+                    type: Type.OBJECT,
+                    properties: {
+                    name: { type: Type.STRING },
+                    relation: { type: Type.STRING },
+                    currentRole: { type: Type.STRING },
+                    loyalty: { type: Type.STRING, enum: ['High', 'Medium', 'Low', 'Rival'] },
+                    },
+                    required: ["name", "relation", "currentRole", "loyalty"]
+                }
+            },
+            blackBookUpdates: {
+                type: Type.ARRAY,
+                items: {
+                    type: Type.OBJECT,
+                    properties: {
+                        id: { type: Type.STRING },
+                        name: { type: Type.STRING },
+                        role: { type: Type.STRING, enum: ['Player', 'Coach', 'Admin', 'Booster', 'Media'] },
+                        currentTeam: { type: Type.STRING },
+                        lastSeenYear: { type: Type.NUMBER },
+                        history: { type: Type.STRING },
+                        status: { type: Type.STRING, enum: ['Active', 'Retired', 'Deceased'] },
+                        relationshipScore: { type: Type.NUMBER },
+                    },
+                    required: ["id", "name", "role", "currentTeam", "lastSeenYear", "history", "status", "relationshipScore"]
+                }
+            },
+            activePromises: {
+                type: Type.ARRAY,
+                items: {
+                    type: Type.OBJECT,
+                    properties: {
+                        id: { type: Type.STRING },
+                        type: { type: Type.STRING, enum: ['Board Mandate', 'Recruit Promise', 'Staff Deal', 'Media Guarantee'] },
+                        description: { type: Type.STRING },
+                        status: { type: Type.STRING, enum: ['Active', 'Fulfilled', 'Broken', 'Void'] },
+                        consequence: { type: Type.STRING },
+                    },
+                    required: ["id", "type", "description", "status", "consequence"]
+                }
+            }
+        },
+        required: ["fanSentiment", "jobSecurity", "stats", "seasonRecord"]
+    },
+    staffNotes: { type: Type.STRING },
+    seasonSummary: {
+      type: Type.OBJECT,
+      nullable: true,
+      properties: {
+        finalRecord: { type: Type.STRING },
+        accomplishment: { type: Type.STRING },
+        keyStats: { type: Type.ARRAY, items: { type: Type.STRING } },
+        boardFeedback: { type: Type.STRING },
+        recruitingClassRank: { type: Type.STRING },
+        topSignee: { type: Type.STRING }
+      },
+      required: ["finalRecord", "accomplishment", "keyStats", "boardFeedback", "recruitingClassRank", "topSignee"]
+    },
+    choices: {
+      type: Type.ARRAY,
+      items: {
+        type: Type.OBJECT,
+        properties: {
+          id: { type: Type.STRING },
+          text: { type: Type.STRING },
+          type: { type: Type.STRING },
+        },
+        required: ["id", "text", "type"],
+      },
+    },
+    gameOver: { type: Type.BOOLEAN },
+};
+
+// C. Dynamic Schema Generator
+// This significantly reduces input tokens by removing the massive 'jobOffers' definition
+// from turns where it is completely irrelevant (Regular Season).
+const getResponseSchema = (includeOffers: boolean): Schema => {
+    const props = { ...baseSchemaProperties } as any;
+    
+    if (includeOffers) {
+        props.jobOffers = jobOffersSchema;
+    }
+
+    return {
+        type: Type.OBJECT,
+        properties: props,
+        required: ["headerUpdates", "mediaContent", "staffNotes", "sceneDescription", "choices", "gameOver"]
+    };
+};
+
+// --- 2. BACKEND LOGIC (DETERMINISTIC) ---
+
+const DEFAULT_STATS: TeamStats = {
+    apRank: 'NR',
+    confStanding: 'N/A',
+    offRank: 'NR',
+    defRank: 'NR',
+    prestige: 'D'
+};
+
+const DEFAULT_ROSTER_DNA: RosterDNA = {
+    style: 'Developer',
+    score: 0
+};
+
+const DEFAULT_STAFF: StaffState = {
+    oc: null,
+    dc: null,
+    staffChemistry: 50
+};
+
+const DEFAULT_PHILOSOPHY: CoachingPhilosophy = {
+    aggression: 50,
+    discipline: 50,
+    adaptability: 50,
+    mediaSavvy: 50
+};
+
+const DEFAULT_CAPITAL: CoachingCapital = {
+    political: 20, 
+    social: 20
+};
+
+const StateEngine = {
+  getYear: (dateStr: string) => parseInt(dateStr.match(/\d{4}/)?.[0] || '1995'),
   
-  if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(`Gemini API error: ${errorText}`);
+  parseSalary: (salaryStr: string) => {
+    const clean = salaryStr.replace(/[$,\s]/g, '').toLowerCase();
+    let mult = 1;
+    if (clean.includes('k')) mult = 1000;
+    if (clean.includes('m')) mult = 1000000;
+    const num = parseFloat(clean.replace(/[km]/g, ''));
+    return isNaN(num) ? 0 : num * mult;
+  },
+
+  advancePhase: (currentHeader: SaveHeader, decisionId: string): Partial<SaveHeader> => {
+    const { timelinePhase, phaseTurn, date } = currentHeader;
+    let newPhase = timelinePhase;
+    let newTurn = phaseTurn + 1;
+    let newDate = date;
+    let year = StateEngine.getYear(date);
+
+    const PHASE_LIMITS = {
+        'Preseason': 1,      
+        'Regular Season': 3, 
+        'Postseason': 1,     
+        'Carousel': 4,       
+        'Offseason': 1       
+    };
+
+    let limit = PHASE_LIMITS[timelinePhase] || 1;
+    let shouldAdvance = newTurn > limit;
+
+    if (!shouldAdvance) {
+        if (timelinePhase === 'Regular Season') {
+             if (newTurn === 2) newDate = `October ${year}`;
+             if (newTurn === 3) newDate = `November ${year}`;
+        }
+        if (timelinePhase === 'Carousel') {
+             const baseMonth = date.split(' ')[0]; 
+             const baseDate = date.split('(')[0].trim();
+             newDate = `${baseMonth} ${year} (Week ${newTurn})`;
+        }
+        return { phaseTurn: newTurn, date: newDate };
+    }
+
+    if (shouldAdvance) {
+        newTurn = 1;
+        switch (timelinePhase) {
+            case 'Preseason': 
+                newPhase = 'Regular Season'; 
+                newDate = `September ${year}`;
+                break;
+            case 'Regular Season': 
+                newPhase = 'Postseason'; 
+                newDate = `December ${year}`; 
+                break;
+            case 'Postseason': 
+                newPhase = 'Carousel'; 
+                newDate = `January ${year + 1} (Week 1)`; 
+                break;
+            case 'Carousel': 
+                newPhase = 'Offseason'; 
+                newDate = `February ${year}`; 
+                if (date.includes('May')) {
+                     newPhase = 'Preseason';
+                     newDate = `August ${year}`;
+                }
+                break;
+            case 'Offseason': 
+                newPhase = 'Preseason'; 
+                newDate = `August ${year}`; 
+                break;
+        }
+    }
+
+    return { timelinePhase: newPhase, phaseTurn: newTurn, date: newDate };
+  },
+
+  processFinancials: (currentHeader: SaveHeader, isNewYear: boolean): Partial<SaveHeader> => {
+      const updates: any = {};
+      if (isNewYear) {
+          updates.age = currentHeader.age + 1;
+          const salary = StateEngine.parseSalary(currentHeader.financials.salary);
+          updates.financials = {
+              ...currentHeader.financials,
+              contractYears: Math.max(0, currentHeader.financials.contractYears - 1),
+              careerEarnings: currentHeader.financials.careerEarnings + salary
+          };
+          if (currentHeader.staff.oc) {
+              const prevOc = currentHeader.staff.oc;
+              updates.staff = { ...currentHeader.staff, oc: { ...prevOc, yearsWithTeam: (prevOc.yearsWithTeam || 0) + 1 } };
+          }
+           if (currentHeader.staff.dc) {
+              const prevDc = currentHeader.staff.dc;
+              updates.staff = { ...(updates.staff || currentHeader.staff), dc: { ...prevDc, yearsWithTeam: (prevDc.yearsWithTeam || 0) + 1 } };
+          }
+      }
+      return updates;
+  },
+
+  archiveSeason: (currentHeader: SaveHeader): CareerLog | null => {
+      // Don't log "Free Agent" as a career season unless specifically desired.
+      // For now, we allow it for "The Wilderness Years" continuity, but maybe flag it?
+      return {
+          year: StateEngine.getYear(currentHeader.date),
+          team: currentHeader.team,
+          role: currentHeader.role,
+          record: currentHeader.seasonRecord,
+          result: "Season Ended", 
+          statsSnapshot: currentHeader.stats
+      };
+  },
+
+  // OPTIMIZED SERIALIZATION: Compact string representation to save tokens
+  serializeState: (header: SaveHeader): string => {
+      const oc = header.staff.oc;
+      const dc = header.staff.dc;
+      const ocStr = oc ? `${oc.name}(${oc.style},${oc.playcalling})` : "Vacant";
+      const dcStr = dc ? `${dc.name}(${dc.style},${dc.playcalling})` : "Vacant";
+      const traitsStr = header.traits.map(t => t.label).join(",") || "None";
+      const ph = header.philosophy;
+      const cap = header.capital;
+
+      return `STATE: Team:${header.team}(${header.conference}) Role:${header.role} Rec:${header.seasonRecord} Pres:${header.stats.prestige} Sent:${header.fanSentiment}% Sec:${header.jobSecurity}
+Admin:${header.adminCompetence} Roster:${header.rosterDNA.style}(${header.rosterDNA.score})
+OC:${ocStr} DC:${dcStr} Chem:${header.staff.staffChemistry}
+Promises:${header.activePromises.length} Net:${header.network.length} BB:${header.blackBook.length}
+Phil(0-100): Aggr${ph.aggression} Disc${ph.discipline} Adapt${ph.adaptability}
+Cap(0-100): Pol${cap.political} Soc${cap.social}
+Traits:${traitsStr}`;
   }
-  
-  const data = await response.json();
-  return data.candidates?.[0]?.content?.parts?.[0]?.text || '';
-}
+};
 
-async function callGemini(prompt: string, schema: object, systemInstruction: string): Promise<string> {
-  if (USE_PROXY) {
-    return callGeminiViaProxy(prompt, schema, systemInstruction);
-  }
-  return callGeminiDirect(prompt, schema, systemInstruction);
-}
+// --- 3. API INTERACTION ---
 
-// ============================================
-// RETRY LOGIC
-// ============================================
-
-async function withRetry<T>(operation: () => Promise<T>, retries = 2, delay = 2000): Promise<T> {
+async function withRetry<T>(operation: () => Promise<T>, retries = 3, delay = 1000): Promise<T> {
   try {
     return await operation();
   } catch (error: any) {
-    const isRateLimit = error.message?.includes('Rate limit') || error.message?.includes('429');
-    
-    if (retries > 0 && isRateLimit) {
-      console.warn(`Rate limited. Retrying in ${delay}ms... (${retries} left)`);
+    if (retries > 0) {
       await new Promise(resolve => setTimeout(resolve, delay));
       return withRetry(operation, retries - 1, delay * 2);
     }
@@ -287,474 +466,356 @@ async function withRetry<T>(operation: () => Promise<T>, retries = 2, delay = 20
   }
 }
 
-// ============================================
-// LOCAL NARRATIVE GENERATION
-// ============================================
-
-interface LocalNarrativeContext {
-  header: TurnLog['header'];
-  teamData?: Team | NFLTeam;
-  gameResults?: Array<{ opponent: string; result: 'W' | 'L'; score: string }>;
-  seed?: number;
-}
-
-const generateLocalTurn = (
-  turnId: number,
-  context: LocalNarrativeContext,
-  transition: PhaseTransition
-): TurnLog => {
-  const { header, teamData, gameResults, seed } = context;
-  const gameContext = saveHeaderToGameContext(header, teamData);
-  const phase = timelineToGamePhase(transition.nextPhase);
-
-  // Build game result for narrative if we have results
-  let narrativeGameResult = undefined;
-  if (gameResults && gameResults.length > 0) {
-    const lastGame = gameResults[gameResults.length - 1];
-    const [teamScore, oppScore] = lastGame.score.split('-').map(s => parseInt(s.trim()));
-
-    // Try to look up opponent team by name, otherwise create placeholder
-    const opponentTeam: Team = {
-      id: 'opp-' + lastGame.opponent.toLowerCase().replace(/\s+/g, '-'),
-      name: lastGame.opponent,
-      nickname: lastGame.opponent,
-      abbreviation: lastGame.opponent.substring(0, 3).toUpperCase(),
-      conference: 'Independent' as any,
-      league: 'ncaa' as const,
-      level: 'fbs-p5' as const,
-      prestige: 3 as const,
-      facilities: 3 as const,
-      budget: 50000,
-      fanbasePassion: 50,
-      expectations: 'bowl' as const,
-      primaryColor: '#333333',
-      secondaryColor: '#666666',
-      stadium: 'Stadium',
-      stadiumCapacity: 50000,
-      location: { city: 'Unknown', state: 'XX', region: 'Midwest' as const },
-      secondaryRivals: [],
-      nationalChampionships: 0,
-      conferenceChampionships: 0,
-      notableCoaches: [],
-    };
-
-    narrativeGameResult = {
-      isWin: lastGame.result === 'W',
-      score: { team: teamScore, opponent: oppScore },
-      opponent: opponentTeam,
-    };
-  }
-
-  // Generate narrative using local engine
-  const narrative = generateLocalNarrative({
-    phase,
-    context: gameContext,
-    gameResult: narrativeGameResult,
-    seed,
-  });
-
-  // Generate job offers if in carousel phase
-  let jobOffers: JobOffer[] | undefined;
-  if (transition.nextPhase === 'Carousel') {
-    const year = getYearFromDate(header.date);
-    const openings = generateJobOpenings(year, 4, seed);
-    jobOffers = openings.map(team => teamToJobOffer(team, year));
-  }
-
-  // Extract scene content - scene is an object with title, description, etc.
-  const sceneText = narrative.scene?.description || 'The season continues.';
-  const sceneTitle = narrative.scene?.title || '';
-  const sceneHeadlines = narrative.scene?.headlines || [];
-
-  // Convert GeneratedChoice[] to Choice[] format expected by UI
-  const choices = narrative.scene?.choices?.options?.map(opt => ({
-    id: opt.id,
-    text: opt.text,
-    type: opt.riskLevel === 'risky' ? 'aggressive' as const : 'strategy' as const,
-  })) || [
-    { id: 'continue', text: 'Continue', type: 'strategy' as const },
-  ];
-
-  return {
-    turnId,
-    header: { ...header, openThreads: sceneHeadlines.slice(0, 3) },
-    mediaHeadline: sceneHeadlines[0] || sceneTitle || 'Season Update',
-    mediaBuzz: narrative.tickerHeadlines?.[0] || sceneHeadlines[1],
-    staffNotes: sceneTitle,
-    sceneDescription: sceneText,
-    resolution: narrative.breakingNews || '',
-    choices,
-    gameOver: false,
-    jobOffers,
-    seasonSummary: undefined,
-  };
-};
-
-// ============================================
-// FALLBACK MOCK DATA (for API errors)
-// ============================================
-
-const generateMockTurn = (turnId: number, lastTurn?: TurnLog): TurnLog => {
-  if (lastTurn) {
-    // Try to generate using local engine even in error case
-    const transition = calculatePhaseTransition(lastTurn.header);
-    try {
-      return generateLocalTurn(turnId, { header: lastTurn.header }, transition);
-    } catch {
-      // Ultimate fallback if local engine fails
-      return {
-        turnId,
-        header: { ...lastTurn.header },
-        mediaHeadline: 'System Recovery',
-        mediaBuzz: 'Game state preserved.',
-        staffNotes: 'Continuing with local simulation.',
-        sceneDescription: `The season continues.\n\nTeam: ${lastTurn.header.team}\nRecord: ${lastTurn.header.seasonRecord}`,
-        resolution: 'Simulated locally.',
-        choices: [
-          { id: 'continue', text: 'Continue Season', type: 'strategy' },
-          { id: 'review', text: 'Review Situation', type: 'passive' },
-        ],
-        gameOver: false,
-      };
-    }
-  }
-
-  return {
-    turnId,
-    header: {
-      date: 'August 1995',
-      age: 22,
-      team: 'Select a Team',
-      conference: 'N/A',
-      role: 'Candidate',
-      seasonRecord: '0-0',
-      legacyScore: 0,
-      fanSentiment: 50,
-      timelinePhase: 'Preseason',
-      schemeOffense: 'Pro Style',
-      schemeDefense: '4-3',
-      qbSituation: 'N/A',
-      reputationTags: [],
-      jobSecurity: 'Stable',
-      openThreads: ['Career Beginning'],
-      network: [],
-      stats: { apRank: 'NR', confStanding: 'N/A', offRank: '--', defRank: '--', prestige: 'N/A' },
-      careerHistory: [],
-    },
-    mediaHeadline: 'Your Journey Begins',
-    mediaBuzz: 'A new coaching career awaits.',
-    staffNotes: 'Ready to build a dynasty.',
-    sceneDescription: 'You are about to embark on a 30-year coaching career. Select your starting position to begin.',
-    choices: [
-      { id: 'start_ga', text: 'Start as Graduate Assistant', type: 'strategy' },
-      { id: 'start_pos', text: 'Start as Position Coach', type: 'strategy' },
-    ],
-    gameOver: false,
-  };
-};
-
-// ============================================
-// PUBLIC API
-// ============================================
-
-export interface LocalInitOptions {
-  coachFirstName: string;
-  coachLastName: string;
-  teamId: string;
-  startYear?: number;
-  startingRole?: 'Head Coach' | 'Offensive Coordinator' | 'Defensive Coordinator' | 'Position Coach' | 'Graduate Assistant';
-  seed?: number;
-}
-
-/**
- * Initialize game using local engine - zero API calls
- */
-export const initializeGameLocal = async (options: LocalInitOptions): Promise<TurnLog> => {
-  const { coachFirstName, coachLastName, teamId, startYear = 1995, startingRole = 'Head Coach', seed = Date.now() } = options;
-
-  const team = getTeamById(teamId);
-  if (!team) {
-    throw new Error(`Team not found: ${teamId}`);
-  }
-
-  const gameContext = {
-    team,
-    coach: {
-      firstName: coachFirstName,
-      lastName: coachLastName,
-      fullName: `${coachFirstName} ${coachLastName}`,
-    },
-    season: startYear,
-    record: { wins: 0, losses: 0 },
-    jobSecurity: 75, // Honeymoon period
-  };
-
-  const narrative = generateLocalNarrative({
-    phase: 'preseason',
-    context: gameContext,
-    seed,
-  });
-
-  const prestigeNames: Record<number, string> = {
-    5: 'Blue Blood',
-    4: 'Power Program',
-    3: 'Solid Mid-Major',
-    2: 'Rebuild Project',
-    1: 'Bottom Feeder',
-  };
-
-  // Extract scene content from narrative
-  const sceneText = narrative.scene?.description || `Welcome to ${team.nickname} football. A new era begins.`;
-  const sceneTitle = narrative.scene?.title || 'New Era Begins';
-  const sceneHeadlines = narrative.scene?.headlines || [`${coachFirstName} ${coachLastName} named head coach at ${team.name}`];
-
-  // Convert choices
-  const choices = narrative.scene?.choices?.options?.map(opt => ({
-    id: opt.id,
-    text: opt.text,
-    type: 'strategy' as const,
-  })) || [
-    { id: 'begin_camp', text: 'Begin Fall Camp', type: 'strategy' as const },
-    { id: 'assess_roster', text: 'Assess the Roster', type: 'strategy' as const },
-  ];
-
-  const header: TurnLog['header'] = {
-    date: `August ${startYear}`,
-    age: startingRole === 'Graduate Assistant' ? 22 : startingRole === 'Position Coach' ? 28 : 35,
-    team: `${team.name} ${team.nickname}`,
-    conference: team.conference,
-    role: startingRole,
-    seasonRecord: '0-0',
-    legacyScore: 0,
-    fanSentiment: 50,
-    timelinePhase: 'Preseason',
-    schemeOffense: 'Pro Style',
-    schemeDefense: '4-3',
-    qbSituation: 'Developing',
-    reputationTags: ['New Hire'],
-    jobSecurity: 'Stable',
-    openThreads: sceneHeadlines.slice(0, 3),
-    network: [],
-    stats: {
-      apRank: 'NR',
-      confStanding: 'Preseason',
-      offRank: '--',
-      defRank: '--',
-      prestige: prestigeNames[team.prestige] || 'Solid Mid-Major',
-    },
-    careerHistory: [],
-  };
-
-  return {
-    turnId: 0,
-    header,
-    mediaHeadline: sceneHeadlines[0] || sceneTitle,
-    mediaBuzz: `${coachFirstName} ${coachLastName} takes the reins at ${team.name}.`,
-    staffNotes: sceneTitle,
-    sceneDescription: sceneText,
-    resolution: narrative.breakingNews || '',
-    choices,
-    gameOver: false,
-  };
-};
-
-/**
- * Initialize game using AI (original implementation)
- */
-export const initializeGame = async (initialPrompt: string): Promise<TurnLog> => {
-  // If local-first mode, use local initialization
-  if (USE_LOCAL_FIRST) {
-    // Parse coach name and team from prompt if possible, or use defaults
-    // For now, return a starting state that lets user select team
-    return generateMockTurn(0);
-  }
-
-  try {
-    const text = await withRetry(() =>
-      callGemini(initialPrompt, initSchema, SYSTEM_INSTRUCTION_SLIM)
-    );
-
-    if (!text) throw new Error('No response');
-
-    const data = JSON.parse(text);
-
-    // Ensure required fields have defaults
-    if (!data.header.network) data.header.network = [];
-    if (!data.header.stats) data.header.stats = { apRank: 'NR', confStanding: 'N/A', offRank: '--', defRank: '--', prestige: 'Mid-Major' };
-    if (!data.header.careerHistory) data.header.careerHistory = [];
-    if (!data.header.openThreads) data.header.openThreads = [];
-    if (!data.header.reputationTags) data.header.reputationTags = [];
-
-    return { ...data, turnId: 0 };
-  } catch (error) {
-    console.error('Init error:', error);
-    return generateMockTurn(0);
-  }
-};
-
-export interface SendDecisionOptions {
-  teamId?: string;
-  teamData?: Team | NFLTeam;
-  seed?: number;
-}
-
-export const sendDecision = async (
-  choiceId: string,
-  choiceText: string,
-  lastTurn: TurnLog,
-  customContext?: string,
-  options?: SendDecisionOptions
-): Promise<TurnLog> => {
-  const header = lastTurn.header;
-  const currentYear = getYearFromDate(header.date);
-
-  // ============================================
-  // STEP 1: LOCAL PHASE TRANSITION
-  // ============================================
-
-  const transition = calculatePhaseTransition(header);
-
-  // Get team data for simulation if available
-  const teamData = options?.teamData || (options?.teamId ? getTeamById(options.teamId) : undefined);
-
-  // Simulate games locally if needed
-  let gameResults = undefined;
-  if (transition.narrativeType === 'game_block' && transition.gamesThisBlock) {
-    const simOptions: Partial<SimulateGameBlockOptions> = {
-      teamId: options?.teamId,
-      level: teamData?.level,
-      conference: teamData?.conference,
-      year: currentYear,
-      seed: options?.seed,
-      gamesPlayedSoFar: parseRecord(header.seasonRecord).wins + parseRecord(header.seasonRecord).losses,
-    };
-
-    gameResults = simulateGameBlock(
-      header.seasonRecord,
-      transition.gamesThisBlock,
-      header.stats.prestige,
-      header.fanSentiment,
-      simOptions
-    );
-  }
-
-  // Apply deterministic state changes
-  const newHeader = applyTransition(header, transition, gameResults);
-
-  // ============================================
-  // STEP 2: LOCAL-FIRST MODE - Generate narrative locally
-  // ============================================
-
-  if (USE_LOCAL_FIRST) {
-    const localTurn = generateLocalTurn(
-      lastTurn.turnId + 1,
-      {
-        header: newHeader,
-        teamData: teamData || undefined,
-        gameResults: gameResults?.results,
-        seed: options?.seed,
+export const initializeGame = async (prompt: string): Promise<TurnLog> => {
+  return withRetry(async () => {
+    const initPrompt = `${prompt} \n\nINITIALIZATION RULE: Set \`header.phaseTurn\` to 1.`;
+    
+    // Always use full schema for initialization to ensure clean starting offers
+    const response = await ai.models.generateContent({
+      model: MODEL_NAME,
+      contents: initPrompt,
+      config: {
+        systemInstruction: REALISM_INSTRUCTION,
+        responseMimeType: "application/json",
+        responseSchema: getResponseSchema(true), 
+        temperature: 0.9,
       },
-      transition
-    );
-    return localTurn;
-  }
+    });
 
-  // ============================================
-  // STEP 3: CHECK CACHE (AI mode only)
-  // ============================================
+    if (!response.text) throw new Error("No text returned from Gemini.");
+    const rawData = JSON.parse(response.text);
 
-  const cacheKey = generateCacheKey(
-    transition.nextPhase,
-    gameResults?.newRecord || header.seasonRecord,
-    choiceId,
-    header.stats.prestige,
-    header.role
-  );
+    const fullHeader: SaveHeader = {
+        date: "May 1995",
+        age: 22,
+        team: "Free Agent",
+        conference: "N/A",
+        role: "Job Seeker",
+        seasonRecord: "0-0",
+        careerRecord: "0-0",
+        careerHistory: [],
+        financials: { salary: "$0", contractYears: 0, buyout: "$0", careerEarnings: 0 },
+        timelinePhase: 'Carousel',
+        phaseTurn: 1,
+        schemeOffense: "Undecided",
+        schemeDefense: "Undecided",
+        qbSituation: "N/A",
+        jobSecurity: "Stable",
+        legacyScore: 0,
+        fanSentiment: 50,
+        adminCompetence: "Average",
+        ...rawData.headerUpdates,
+        stats: rawData.headerUpdates?.stats || DEFAULT_STATS,
+        rosterDNA: rawData.headerUpdates?.rosterDNA || DEFAULT_ROSTER_DNA,
+        staff: rawData.headerUpdates?.staff || DEFAULT_STAFF,
+        network: rawData.headerUpdates?.networkUpdates || [],
+        blackBook: rawData.headerUpdates?.blackBookUpdates || [],
+        activePromises: rawData.headerUpdates?.activePromises || [],
+        openThreads: rawData.headerUpdates?.openThreads || [],
+        reputationTags: rawData.headerUpdates?.reputationTags || [],
+        philosophy: DEFAULT_PHILOSOPHY,
+        capital: DEFAULT_CAPITAL,
+        traits: []
+    };
 
-  const cached = getCachedResponse(cacheKey);
-  if (cached) {
-    // Merge cached narrative with fresh local state
     return {
-      ...cached,
-      turnId: lastTurn.turnId + 1,
-      header: { ...newHeader, openThreads: cached.header?.openThreads || newHeader.openThreads },
+        turnId: 0,
+        header: fullHeader,
+        mediaContent: rawData.mediaContent,
+        staffNotes: rawData.staffNotes,
+        sceneDescription: rawData.sceneDescription,
+        choices: rawData.choices,
+        gameOver: rawData.gameOver,
+        jobOffers: rawData.jobOffers,
+        seasonSummary: rawData.seasonSummary,
+        resolution: rawData.resolution
     };
+  });
+};
+
+export const sendDecision = async (decisionId: string, choiceText: string, currentTurn: TurnLog, customContext?: string): Promise<TurnLog> => {
+  const currentHeader = currentTurn.header;
+  const year = StateEngine.getYear(currentHeader.date);
+  
+  // 1. CALCULATE DETERMINISTIC STATE
+  const nextHeader: SaveHeader = { ...currentHeader };
+
+  // A. Phase Advance
+  const nextPhaseState = StateEngine.advancePhase(currentHeader, decisionId);
+  Object.assign(nextHeader, nextPhaseState);
+
+  // B. Financial/Age Advance (Year Rollover)
+  const isNewCalendarYear = nextHeader.timelinePhase === 'Carousel' && currentHeader.timelinePhase === 'Postseason';
+  const nextFinancialState = StateEngine.processFinancials(currentHeader, !!isNewCalendarYear);
+  Object.assign(nextHeader, nextFinancialState);
+  if (nextFinancialState.financials) {
+      Object.assign(nextHeader.financials, nextFinancialState.financials);
+  }
+  if (nextFinancialState.staff) {
+       Object.assign(nextHeader.staff, nextFinancialState.staff);
   }
 
-  // ============================================
-  // STEP 4: BUILD MINIMAL PROMPT
-  // ============================================
+  // C. Handle Job Acceptance
+  let dynamicContext = customContext || 'None';
+  let isHired = false;
+  let hiredOffer: JobOffer | undefined = undefined;
 
-  const minContext = buildMinimalContext({ ...lastTurn, header: newHeader });
+  if (decisionId.includes('offer_accept')) {
+      const acceptedOfferId = decisionId.replace('offer_accept_', '');
+      
+      // Robust Finding: Try Exact Match first, then string match, then loose match
+      if (currentTurn.jobOffers) {
+        hiredOffer = currentTurn.jobOffers.find(o => String(o.id) === String(acceptedOfferId));
+        if (!hiredOffer) hiredOffer = currentTurn.jobOffers.find(o => String(o.id).trim() === String(acceptedOfferId).trim());
+        if (!hiredOffer) hiredOffer = currentTurn.jobOffers.find(o => choiceText.includes(o.team));
+      }
 
-  let prompt = `STATE:${minContext}\n`;
-  prompt += `ACTION:"${choiceText}"\n`;
-  if (customContext) prompt += `DETAIL:"${customContext}"\n`;
+      if (hiredOffer) {
+          // --- CHANGED LOGIC: Immediate Resolution for Interviews ---
+          // Previously, we paused to roleplay the interview. Now, we simulate the result immediately.
+          if (hiredOffer.status === 'Interviewing' || hiredOffer.type === 'Interview') {
+              // 80% Success Rate for interviews to keep gameplay moving, modified by 'adPatience' logic implied.
+              const success = Math.random() > 0.20; 
+              
+              if (success) {
+                   dynamicContext += `\n [SYSTEM OVERRIDE]: User attended the interview at ${hiredOffer.team} and SUCCEEDED. They are hired immediately. Write a scene about the successful meeting and handshake.`;
+                   // Fall through to hiring logic below
+              } else {
+                   dynamicContext += `\n [SYSTEM OVERRIDE]: User attended the interview at ${hiredOffer.team} and FAILED. They were rejected. Write a scene about the rejection (e.g., questions they couldn't answer, bad fit). The user remains a Free Agent and must find another job.`;
+                   hiredOffer = undefined; // Prevents the hire logic from running below
+              }
+          }
+      }
 
-  // Include game results for narrative
-  if (gameResults) {
-    const resultsStr = gameResults.results.map(r => `${r.result} vs ${r.opponent} (${r.score})`).join(', ');
-    prompt += `GAMES:${resultsStr}\n`;
-    prompt += `RECORD:${gameResults.newRecord}\n`;
+      // If hiredOffer still exists (Direct Offer OR Successful Interview), process the hire
+      if (hiredOffer) {
+          isHired = true;
+          
+          // CRITICAL: Force Phase Transition to Offseason immediately to end the Carousel
+          nextHeader.team = hiredOffer.team;
+          nextHeader.role = hiredOffer.role;
+          nextHeader.conference = hiredOffer.conference;
+          nextHeader.financials.salary = hiredOffer.salary;
+          nextHeader.financials.contractYears = parseInt(hiredOffer.contractLength) || 1;
+          nextHeader.financials.buyout = hiredOffer.buyout;
+          nextHeader.jobSecurity = "Stable"; 
+          nextHeader.fanSentiment = 50; 
+          nextHeader.adminCompetence = hiredOffer.adminCompetence;
+          nextHeader.seasonRecord = "0-0"; 
+          nextHeader.staff = { oc: null, dc: null, staffChemistry: 50 };
+          nextHeader.timelinePhase = 'Offseason'; // SKIP REST OF CAROUSEL
+          nextHeader.phaseTurn = 1;
+          nextHeader.date = `February ${year}`; 
+          
+          dynamicContext += `\n [SYSTEM OVERRIDE - HIRED]: User is now officially HIRED at ${hiredOffer.team}. The Carousel Phase is ENDED. Fast forwarding to Offseason (February).`;
+      } else if (!dynamicContext.includes('FAILED')) {
+          // Fallback if ID lookup failed but it wasn't a rejection
+          const match = choiceText.match(/from (.*)$/i);
+          const fallbackTeam = match ? match[1].trim() : "Unknown Team";
+           dynamicContext += `\n [SYSTEM WARNING]: User accepted offer but ID lookup failed. FORCING HIRE at ${fallbackTeam}.`;
+           isHired = true;
+           nextHeader.team = fallbackTeam;
+           nextHeader.role = "Head Coach"; 
+           nextHeader.timelinePhase = 'Offseason';
+           nextHeader.phaseTurn = 1;
+           nextHeader.date = `February ${year}`;
+           nextHeader.seasonRecord = "0-0";
+           nextHeader.staff = { oc: null, dc: null, staffChemistry: 50 };
+      }
   }
 
-  prompt += `PHASE:${transition.nextPhase}\n`;
-  prompt += `YEAR:${currentYear}\n`;
-
-  // Special instructions per phase
-  if (transition.narrativeType === 'carousel') {
-    prompt += 'TASK:Generate job offers (2-4) and career narrative.\n';
-  } else if (transition.narrativeType === 'bowl') {
-    prompt += 'TASK:Generate bowl game narrative.\n';
-  } else if (transition.narrativeType === 'preseason') {
-    prompt += 'TASK:Generate preseason narrative with camp storylines.\n';
+  // D. History Archive
+  let newHistoryLog: CareerLog | null = null;
+  if (currentHeader.timelinePhase === 'Postseason' && nextHeader.timelinePhase === 'Carousel') {
+      newHistoryLog = StateEngine.archiveSeason(currentHeader);
   }
 
-  prompt += 'OUTPUT:JSON narrative only.\n';
+  // 2. GENERATE PROMPT
+  const stateSummary = StateEngine.serializeState(nextHeader);
+  
+  const systemUpdate = `
+    SYSTEM UPDATE: Date:${nextHeader.date} Phase:${nextHeader.timelinePhase} Age:${nextHeader.age}
+    ${isHired ? `**HIRED & PHASE JUMP:** User is now the ${nextHeader.role} at ${nextHeader.team}. The Carousel is CLOSED. We are now in OFFSEASON.` : ''}
+    ${newHistoryLog ? `
+    **SEASON ENDED (ARCHIVING):**
+    - The season has officially concluded.
+    - Logged Record: ${currentHeader.seasonRecord}
+    - MANDATORY TASK: You MUST populate the 'seasonSummary' field in the JSON response with the final stats, accomplishments, and board feedback for this specific year.
+    ` : ''}
+  `;
 
-  // ============================================
-  // STEP 5: CALL AI FOR NARRATIVE (with local fallback)
-  // ============================================
+  const previousTurnContext = `LAST SCENE: "${currentTurn.sceneDescription || 'Start'}"\nHEADLINE: "${currentTurn.mediaContent?.headline || 'N/A'}"`;
+  const tacticalMeta = TACTICAL_META(year);
+  const eraContext = `Era: ${year}. ${tacticalMeta}`;
+  
+  const isUnemployed = nextHeader.team === 'Free Agent' || nextHeader.team === 'Job Seeker' || nextHeader.team === 'Unemployed';
+  
+  // LOGIC: DETERMINE IF WE NEED THE HEAVY SCHEMA
+  // We need job offers if we are in Carousel/Offseason OR if we are Unemployed.
+  const needsJobOffers = (nextHeader.timelinePhase === 'Carousel' || nextHeader.timelinePhase === 'Offseason' || isUnemployed) && !isHired;
 
-  try {
-    const text = await withRetry(() =>
-      callGemini(prompt, narrativeSchema, SYSTEM_INSTRUCTION_SLIM)
-    );
+  let offerInstruction = "";
+  if (needsJobOffers) {
+      let wins = 0; 
+      let losses = 0;
+      if (currentHeader.seasonRecord) {
+         const parts = currentHeader.seasonRecord.split(/[-–]/).map(s => parseInt(s));
+         if (parts.length >= 2) { wins = parts[0]; losses = parts[1]; }
+      }
+      const winPct = (wins + losses) > 0 ? wins / (wins + losses) : 0.5;
+      const isFired = nextHeader.jobSecurity.toLowerCase().includes('fired') || nextHeader.jobSecurity.toLowerCase().includes('terminated');
+      const isBadSeason = winPct < 0.4 || isFired;
 
-    if (!text) throw new Error('No response');
+      if (isBadSeason) {
+          offerInstruction = "User is struggling. GENERATE 2 OFFERS: 1. Rehab (Analyst/QC). 2. Reset (G5 Coord/FCS HC).";
+      } else if (winPct > 0.85) {
+          offerInstruction = "User is elite. GENERATE 1-2 OFFERS: P5 HC, NFL Coord, or big raise.";
+      } else {
+          offerInstruction = "User is average. GENERATE 1 OFFER (Lateral move) or NONE.";
+      }
+      
+      if (isUnemployed) {
+          offerInstruction = "User UNEMPLOYED. Offer 3 paths: Grind (D3 HC), Technician (Pos Coach), Suit (Analyst).";
+      }
+  } else {
+      offerInstruction = "NO JOB OFFERS. 'jobOffers' must be null or empty.";
+  }
+  
+  if (isHired) {
+      offerInstruction = "USER IS HIRED. STOP CAROUSEL. DO NOT GENERATE JOB OFFERS.";
+  }
 
-    const narrativeData = JSON.parse(text);
+  const prompt = `
+    ${eraContext}
+    ${previousTurnContext}
+    ${stateSummary}
+    ${systemUpdate}
+    ${getPostseasonFormat(year).desc}
+    
+    ACTION: "${choiceText}"
+    CTX: "${dynamicContext}"
 
-    // Merge AI narrative with local state
-    const fullTurn: TurnLog = {
-      turnId: lastTurn.turnId + 1,
-      header: {
-        ...newHeader,
-        openThreads: narrativeData.openThreads || newHeader.openThreads,
+    TASKS:
+    1. Write scene.
+    2. Update 'headerUpdates'.
+    3. ${offerInstruction}
+    4. If Preseason/Offseason, FILL MISSING STAFF.
+    5. If Carousel, check POACHING logic.
+  `;
+
+  // 3. CALL AI WITH DYNAMIC SCHEMA
+  return withRetry(async () => {
+    const response = await ai.models.generateContent({
+      model: MODEL_NAME,
+      contents: prompt,
+      config: {
+        systemInstruction: REALISM_INSTRUCTION, 
+        responseMimeType: "application/json",
+        // CRITICAL TOKEN SAVING: Only send the huge Offer schema when needed
+        responseSchema: getResponseSchema(needsJobOffers), 
+        temperature: 0.9,
       },
-      mediaHeadline: narrativeData.mediaHeadline || 'No headline',
-      mediaBuzz: narrativeData.mediaBuzz,
-      staffNotes: narrativeData.staffNotes || '',
-      sceneDescription: narrativeData.sceneDescription,
-      resolution: narrativeData.resolution,
-      choices: narrativeData.choices || [],
-      gameOver: narrativeData.gameOver || false,
-      seasonSummary: narrativeData.seasonSummary,
-      jobOffers: narrativeData.jobOffers,
+    });
+
+    if (!response.text) throw new Error("No response from Gemini");
+    const aiData = JSON.parse(response.text);
+
+    // 4. FINAL STATE MERGE
+    if (aiData.headerUpdates) {
+        const updates = aiData.headerUpdates;
+        
+        // PROTECTION: If we just got hired, ignore AI attempts to revert Team/Role/Phase
+        if (isHired) {
+            delete updates.team;
+            delete updates.role;
+            delete updates.conference;
+            delete updates.timelinePhase;
+            delete updates.phaseTurn;
+            delete updates.jobSecurity; // Reset to Stable in deterministic logic
+        }
+
+        if (updates.fanSentiment !== undefined) nextHeader.fanSentiment = updates.fanSentiment;
+        if (updates.jobSecurity) nextHeader.jobSecurity = updates.jobSecurity;
+        if (updates.adminCompetence) nextHeader.adminCompetence = updates.adminCompetence;
+        if (updates.legacyScore) nextHeader.legacyScore = updates.legacyScore; 
+        if (updates.seasonRecord) nextHeader.seasonRecord = updates.seasonRecord;
+        if (updates.stats) nextHeader.stats = { ...nextHeader.stats, ...updates.stats };
+        if (updates.rosterDNA) nextHeader.rosterDNA = updates.rosterDNA;
+        if (updates.staff) nextHeader.staff = { ...nextHeader.staff, ...updates.staff };
+        if (updates.philosophy) nextHeader.philosophy = { ...nextHeader.philosophy, ...updates.philosophy };
+        if (updates.capital) nextHeader.capital = { ...nextHeader.capital, ...updates.capital };
+        
+        if (updates.newTraits && Array.isArray(updates.newTraits)) {
+            const existingIds = new Set(nextHeader.traits.map(t => t.id));
+            const distinctNew = updates.newTraits.filter((t: EarnedTrait) => !existingIds.has(t.id));
+            nextHeader.traits = [...nextHeader.traits, ...distinctNew];
+        }
+        if (updates.reputationTags) nextHeader.reputationTags = updates.reputationTags; 
+        if (updates.openThreads) nextHeader.openThreads = updates.openThreads;
+        if (updates.networkUpdates) {
+            const map = new Map(nextHeader.network.map(c => [c.name.trim(), c]));
+            updates.networkUpdates.forEach((u: Connection) => map.set(u.name.trim(), u)); 
+            nextHeader.network = Array.from(map.values());
+        }
+        if (updates.blackBookUpdates) {
+             const idMap = new Map(nextHeader.blackBook.map(b => [String(b.id), b]));
+             const nameMap = new Map(nextHeader.blackBook.map(b => [b.name.toLowerCase().trim(), b]));
+             updates.blackBookUpdates.forEach((u: BlackBookEntry) => {
+                const uId = String(u.id);
+                const uName = u.name.toLowerCase().trim();
+                if (idMap.has(uId)) {
+                    idMap.set(uId, { ...idMap.get(uId)!, ...u });
+                } else if (nameMap.has(uName)) {
+                     const existing = nameMap.get(uName)!;
+                     idMap.set(String(existing.id), { ...existing, ...u, id: existing.id });
+                } else {
+                    idMap.set(uId, u);
+                }
+            });
+            nextHeader.blackBook = Array.from(idMap.values());
+        }
+        if (updates.activePromises) nextHeader.activePromises = updates.activePromises;
+    }
+
+    if (isHired) {
+        // STRICT RE-ASSERTION: Prevent AI hallucinations from reverting the team
+        if (hiredOffer) {
+            nextHeader.team = hiredOffer.team;
+            nextHeader.role = hiredOffer.role;
+        }
+        nextHeader.timelinePhase = 'Offseason'; 
+        nextHeader.phaseTurn = 1;
+        nextHeader.date = `February ${year}`;
+    }
+
+    if (newHistoryLog) {
+        // LOCK DOWN HISTORY: Ensure no duplicates for the same year
+        const alreadyLogged = nextHeader.careerHistory.some(h => h.year === newHistoryLog!.year);
+        
+        if (!alreadyLogged) {
+            if (aiData.seasonSummary?.accomplishment) newHistoryLog.result = aiData.seasonSummary.accomplishment;
+            if (aiData.seasonSummary?.finalRecord) newHistoryLog.record = aiData.seasonSummary.finalRecord;
+            nextHeader.careerHistory = [...currentHeader.careerHistory, newHistoryLog];
+        }
+    }
+    
+    // Fallback: If AI returns offers when not requested (rare but possible), respect the logic constraint
+    let finalJobOffers = aiData.jobOffers;
+    if (isHired || !needsJobOffers) {
+        finalJobOffers = [];
+    }
+
+    return {
+        turnId: currentTurn.turnId + 1,
+        header: nextHeader,
+        mediaContent: aiData.mediaContent,
+        staffNotes: aiData.staffNotes,
+        sceneDescription: aiData.sceneDescription,
+        choices: aiData.choices,
+        gameOver: aiData.gameOver,
+        seasonSummary: aiData.seasonSummary,
+        jobOffers: finalJobOffers,
+        resolution: aiData.resolution
     };
-
-    // Cache successful response
-    setCachedResponse(cacheKey, fullTurn);
-
-    return fullTurn;
-
-  } catch (error) {
-    console.error('Turn error, falling back to local:', error);
-    // Fall back to local generation
-    return generateLocalTurn(
-      lastTurn.turnId + 1,
-      { header: newHeader, teamData: teamData || undefined, gameResults: gameResults?.results },
-      transition
-    );
-  }
+  });
 };

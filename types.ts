@@ -1,4 +1,7 @@
+
 export type TimelinePhase = 'Preseason' | 'Regular Season' | 'Postseason' | 'Carousel' | 'Offseason';
+export type AdminCompetence = 'Inept' | 'Average' | 'Clever' | 'Ruthless';
+export type OfferType = 'Direct Offer' | 'Interview' | 'Rumor';
 
 export interface Choice {
   id: string;
@@ -6,27 +9,58 @@ export interface Choice {
   type: 'action' | 'dialogue' | 'strategy';
 }
 
+export interface Coordinator {
+  name: string;
+  age: number;
+  role: 'OC' | 'DC';
+  playcalling: number; // 0-100
+  recruiting: number; // 0-100
+  style: string; // e.g., "Air Raid", "4-3 Zone", "Wishbone"
+  loyalty: 'High' | 'Medium' | 'Low';
+  ambition: 'High' | 'Medium' | 'Low';
+  yearsWithTeam: number;
+  status: 'Active' | 'Poached' | 'Fired' | 'Retiring';
+}
+
+export interface StaffState {
+  oc: Coordinator | null;
+  dc: Coordinator | null;
+  staffChemistry: number; // 0-100
+}
+
+export interface RosterSnapshot {
+  talentLevel: 'Elite' | 'Good' | 'Average' | 'Depleted';
+  cultureHealth: 'Strong' | 'Fragile' | 'Toxic';
+  primaryNeed: string;
+}
+
 export interface JobOffer {
   id: string;
+  type: OfferType;
   team: string;
   role: string;
   conference: string;
-  prestige: string; // e.g. "Blue Blood", "Rebuild", "Contender"
-  salary: string;   // e.g. "$400k/yr"
-  contractLength: string; // New: e.g. "4 Years"
-  buyout: string;   // New: e.g. "$2.5M"
-  pitch: string;    // The narrative reason they want you
-  perks: string[];  // New: e.g. ["Country Club Membership", "Unlimited Staff Pool"]
-  status: 'New' | 'Negotiating' | 'Final Offer' | 'Rescinded'; // New: Tracks state
-  adPatience?: 'High' | 'Medium' | 'Low' | 'Zero'; // New: Tracks risk of offer being pulled
+  prestige: string;
+  adminCompetence: AdminCompetence;
+  salary: string;
+  contractLength: string;
+  buyout: string;
+  pitch: string;
+  perks: string[];
+  status: 'New' | 'Negotiating' | 'Final Offer' | 'Rescinded' | 'Interviewing';
+  adPatience?: 'High' | 'Medium' | 'Low' | 'Zero';
+  staffPerception: 'Safe Pair of Hands' | 'High Upside Gamble' | 'System Fit' | 'Cheap Option' | 'Desperation Hire'; 
+  fanPerception: 'Home Run' | 'Solid Choice' | 'Underwhelming' | 'Who?' | 'Outrage';
+  rosterSnapshot: RosterSnapshot;
+  marketBuzz: string;
 }
 
 export interface TeamStats {
-  apRank: string;      // e.g. "#4", "NR", "RV"
-  confStanding: string; // e.g. "1st in West"
-  offRank: string;     // e.g. "12th"
-  defRank: string;     // e.g. "104th"
-  prestige: string;    // e.g. "Blue Blood"
+  apRank: string;
+  confStanding: string;
+  offRank: string;
+  defRank: string;
+  prestige: string;
 }
 
 export interface CareerLog {
@@ -34,14 +68,89 @@ export interface CareerLog {
   team: string;
   role: string;
   record: string;
-  result: string; // e.g. "Bowl Win", "Fired", "Promoted"
+  result: string;
+  statsSnapshot?: TeamStats;
 }
 
 export interface Connection {
   name: string;
-  relation: string; // e.g. "Former DC", "Mentor", "Rival", "Star QB"
-  currentRole: string; // e.g. "HC at Florida"
+  relation: string;
+  currentRole: string;
   loyalty: 'High' | 'Medium' | 'Low' | 'Rival';
+}
+
+export interface BlackBookEntry {
+  id: string;
+  name: string;
+  role: 'Player' | 'Coach' | 'Admin' | 'Booster' | 'Media';
+  currentTeam: string; 
+  lastSeenYear: number;
+  history: string; 
+  status: 'Active' | 'Retired' | 'Deceased';
+  relationshipScore: number; // 0-100 scale
+}
+
+export interface Promise {
+  id: string;
+  type: 'Board Mandate' | 'Recruit Promise' | 'Staff Deal' | 'Media Guarantee';
+  description: string;
+  status: 'Active' | 'Fulfilled' | 'Broken' | 'Void';
+  consequence: string;
+}
+
+export interface RosterDNA {
+  style: 'Developer' | 'Mercenary' | 'Recruiter' | 'Tactician';
+  score: number;
+}
+
+export interface Financials {
+  salary: string;
+  contractYears: number;
+  buyout: string;
+  careerEarnings: number;
+}
+
+export interface FanReaction {
+  source: 'Twitter' | 'MessageBoard' | 'RadioCall' | 'NewspaperLetter';
+  author: string;
+  content: string;
+  sentiment: 'Positive' | 'Negative' | 'Neutral';
+}
+
+export interface MediaContent {
+  headline: string;
+  source: 'National TV' | 'Local Beat' | 'Tactical Blog' | 'Tabloid' | 'Campus Paper';
+  mediaNarrative: 'The Hero' | 'The Villain' | 'The Hot Seat' | 'The Genius' | 'The Underdog' | 'The Fraud'; 
+  narrativeMood: 'Crisis' | 'Euphoria' | 'Skepticism' | 'Apathy' | 'Tension' | 'Stability';
+  beatWriterAnalysis: string;
+  fanReactions: FanReaction[];
+  interviewQuote?: {
+    speaker: string;
+    context: string;
+    quote: string;
+  };
+}
+
+// --- REALISM TYPES (Replaces RPG) ---
+
+export interface CoachingPhilosophy {
+    aggression: number; // 0 (Conservative) - 100 (Risky)
+    discipline: number; // 0 (Player's Coach) - 100 (Authoritarian)
+    adaptability: number; // 0 (System Purist) - 100 (Flexible)
+    mediaSavvy: number; // 0 (Recluse) - 100 (Celebrity)
+}
+
+export interface EarnedTrait {
+    id: string;
+    label: string;
+    description: string;
+    type: 'Positive' | 'Negative' | 'Neutral';
+    icon: string; // Lucide icon name hint
+}
+
+export interface CoachingCapital {
+    political: number; // 0-100 (Influence with Board/Admin)
+    social: number; // 0-100 (Influence with Recruiters/Media)
 }
 
 export interface SaveHeader {
@@ -51,18 +160,31 @@ export interface SaveHeader {
   conference: string;
   role: string;
   seasonRecord: string;
+  careerRecord: string;
+  adminCompetence: AdminCompetence;
   legacyScore: number;
-  fanSentiment: number; // New: 0-100 Approval Rating
+  fanSentiment: number;
   timelinePhase: TimelinePhase;
+  phaseTurn: number;
+  financials: Financials;
   schemeOffense: string;
   schemeDefense: string;
   qbSituation: string;
   reputationTags: string[];
   jobSecurity: string;
   openThreads: string[];
-  network: Connection[]; // New: The Coaching Tree / Contact List
+  network: Connection[];
+  blackBook: BlackBookEntry[]; 
+  activePromises: Promise[]; 
+  rosterDNA: RosterDNA;
   stats: TeamStats;
+  staff: StaffState;
   careerHistory: CareerLog[];
+  
+  // NEW REALISM FIELDS
+  philosophy: CoachingPhilosophy;
+  capital: CoachingCapital;
+  traits: EarnedTrait[];
 }
 
 export interface SeasonSummary {
@@ -71,13 +193,14 @@ export interface SeasonSummary {
   accomplishment: string;
   keyStats: string[];
   boardFeedback: string;
+  recruitingClassRank: string;
+  topSignee: string;
 }
 
 export interface TurnLog {
   turnId: number;
   header: SaveHeader;
-  mediaHeadline: string;
-  mediaBuzz?: string; // New: "Word on the street" (Radio/Papers)
+  mediaContent: MediaContent;
   staffNotes: string;
   seasonSummary?: SeasonSummary;
   jobOffers?: JobOffer[];
@@ -91,9 +214,4 @@ export interface GameState {
   currentTurn: TurnLog;
   history: TurnLog[];
   gameOver: boolean;
-}
-
-export interface ChatMessage {
-  role: 'user' | 'model';
-  parts: Array<{ text: string }>;
 }
